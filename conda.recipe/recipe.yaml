@@ -1,0 +1,42 @@
+context:
+  version: "0.1.0"
+
+package:
+  name: mojo-kumihan
+  version: ${{ version }}
+
+source:
+  path: ..
+
+build:
+  number: 0
+  script:
+    - mojo precompile src/kumihan -o ${{ PREFIX }}/lib/mojo/kumihan.mojoc
+
+requirements:
+  build:
+    - mojo-compiler ==1.0.0
+  host:
+    - mojo-compiler ==1.0.0
+  run:
+    - mojo-compiler ==1.0.0
+
+tests:
+  - script:
+      - mojo run test_package.mojo
+    files:
+      recipe:
+        - test_package.mojo
+
+about:
+  homepage: https://github.com/Ameyanagi/kumihan
+  repository: https://github.com/Ameyanagi/kumihan
+  license: MIT OR Apache-2.0
+  license_file:
+    - LICENSE-MIT
+    - LICENSE-APACHE
+  summary: Validated OpenType font data and text shaping foundations for Mojo.
+
+extra:
+  maintainers:
+    - Ameyanagi

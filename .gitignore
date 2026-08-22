@@ -1,0 +1,7 @@
+.DS_Store
+.pixi/
+dist/
+output/
+*.mojoc
+AGENTS.md
+

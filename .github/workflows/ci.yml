@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux x86-64
+            os: ubuntu-24.04
+          - name: Linux ARM64
+            os: ubuntu-24.04-arm
+          - name: macOS ARM64
+            os: macos-14
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: prefix-dev/setup-pixi@f00437f565399d418b0acc85936d12c1fb668347 # v0.10.1
+        with:
+          pixi-version: v0.76.2
+          cache: true
+      - name: Verify locked workspace
+        run: pixi run --locked check
+
+  package:
+    name: Package Linux x86-64
+    runs-on: ubuntu-24.04
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: prefix-dev/setup-pixi@f00437f565399d418b0acc85936d12c1fb668347 # v0.10.1
+        with:
+          pixi-version: v0.76.2
+          cache: true
+      - name: Verify release metadata
+        run: |
+          pixi_version=$(sed -n 's/^version = "\([^"]*\)"$/\1/p' pixi.toml)
+          bash scripts/check-release.sh --metadata-only "v${pixi_version}"
+      - name: Build package
+        run: pixi run --locked package
+      - name: Validate emitted package index
+        run: |
+          pixi_version=$(sed -n 's/^version = "\([^"]*\)"$/\1/p' pixi.toml)
+          bash scripts/check-package.sh mojo-kumihan "$pixi_version" linux-64

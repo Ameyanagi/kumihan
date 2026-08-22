@@ -10,20 +10,20 @@ The first release is a narrow, testable foundation:
 
 - validated SFNT and TTC face/table directories;
 - global and nominal horizontal metrics;
-- Unicode `cmap` formats 4 and 12;
-- nominal scalar-to-glyph mapping; and
-- horizontal positioned runs without OpenType substitutions or positioning.
+- Unicode `cmap` formats 4, 12, and 14;
+- nominal scalar and font-declared variation-sequence mapping;
+- horizontal positioned runs; and
+- required and `locl` GSUB SingleSubst shaping for explicit CJK script runs.
 
-Nominal shaping means one Unicode scalar is mapped independently through the
-selected `cmap`. A missing mapping uses the font's missing-glyph convention.
-Horizontal advances come from the font's horizontal metrics. No language,
-script, neighboring glyph, or variation selector changes the selected glyph in
-this release.
+Nominal shaping remains the exact cmap-plus-horizontal-metrics reference path.
+The higher-level `shape` APIs additionally apply the supported required and
+localized-form substitutions described below. GPOS and contextual shaping are
+not part of this release.
 
-## Unreleased variation-sequence foundation
+## Variation-sequence foundation
 
-The current unreleased slice adds validated `cmap` format 14 parsing and
-font-declared Unicode variation-sequence lookup.
+Version 0.1.0 includes validated `cmap` format 14 parsing and font-declared
+Unicode variation-sequence lookup.
 `FontFace.variation_glyph_id(base, selector)` returns an optional resolved
 glyph: a default UVS uses the primary format 4/12 mapping, an explicit UVS uses
 its format 14 glyph ID, and an unsupported pair remains distinguishable as
@@ -36,11 +36,11 @@ ignorable. This is structural, font-declared selection. Kumihan does not yet
 bundle the Unicode standardized-variation or Ideographic Variation Database
 registries, and format 14 alone does not provide contextual OpenType shaping.
 
-## Unreleased localized-form shaping
+## Localized-form shaping
 
-The current additive slice validates the OpenType Layout common structures in
-GSUB 1.0 and the default-feature path of GSUB 1.1. FeatureVariations record
-metadata is bounded, but conditional alternate Feature tables are not evaluated.
+Version 0.1.0 validates the OpenType Layout common structures in GSUB 1.0 and
+the default-feature path of GSUB 1.1. FeatureVariations records are bounded,
+but conditional alternate Feature tables are not evaluated.
 Horizontal required features plus `locl` execute when they use SingleSubst
 format 1 or 2. Coverage formats 1 and 2 and ExtensionSubst type 7 wrapping
 SingleSubst are supported. Lookup indices are deduplicated and applied in

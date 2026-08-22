@@ -13,6 +13,13 @@ and uses semantic versioning for public releases.
   pairs as `None` and valid glyph-zero mappings as `Some(0)`.
 - Make nominal shaping consume font-declared default and explicit IVSes as one
   UTF-8 cluster while retaining the base glyph for unsupported pairs.
+- Add validated GSUB 1.0 and GSUB 1.1 default-feature layout parsing for CJK
+  script and language-system selection, Coverage formats 1/2, SingleSubst
+  formats 1/2, and type 7-to-1 ExtensionSubst. Conditional FeatureVariations
+  alternates remain intentionally unapplied.
+- Add `Script`, `TextStyle.with_script(...)`, `shape(...)`, and
+  `shape_into(...)`; horizontal shaping applies required and `locl` lookups
+  automatically while the nominal APIs remain exact cmap-plus-metrics oracles.
 
 ### Fixed
 

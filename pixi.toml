@@ -6,7 +6,7 @@ platforms = ["osx-arm64", "linux-64", "linux-aarch64"]
 version = "0.1.0"
 
 [tasks]
-bench-core = { cmd = "mojo build -O3 -I src -I tests benchmarks/bench_core.mojo -o .pixi/bench-core && .pixi/bench-core", description = "Compile and run cached cmap and nominal shaping benchmarks" }
+bench-core = { cmd = "mojo build -O3 -I src -I tests benchmarks/bench_core.mojo -o .pixi/bench-core && .pixi/bench-core", description = "Compile and run cached cmap, nominal, and GSUB shaping benchmarks" }
 check = { depends-on = ["format-check", "readme-check", "test", "precompile"], description = "Run the complete validation suite" }
 format = { cmd = "bash scripts/format.sh", description = "Format Mojo source files" }
 format-check = { cmd = "bash scripts/check-format.sh", description = "Verify Mojo formatting without modifying source" }

@@ -1,12 +1,15 @@
-"""AOT distribution benchmark for cached cmap lookup and nominal shaping."""
+"""AOT distribution benchmark for cached cmap lookup and shaping."""
 
 from kumihan import (
     FontCollection,
     FontFace,
     GlyphRun,
     Language,
+    Script,
     ShapeBuffer,
     TextStyle,
+    shape,
+    shape_into,
     shape_nominal,
     shape_nominal_into,
 )
@@ -16,8 +19,12 @@ from std.sys import argv
 from std.time import perf_counter_ns
 
 from support.font_fixture import (
+    make_gsub_single_format1,
+    make_gsub_single_format2_coverage2,
     make_test_collection,
+    make_test_cjk_gsub_font,
     make_test_font,
+    make_test_font_with_gsub,
     make_test_uvs_font,
 )
 
@@ -28,6 +35,7 @@ comptime _LOOKUP_SAMPLE_BUDGET = 1 << 20
 comptime _VARIATION_QUERY_COUNT = 1 << 16
 comptime _VARIATION_SAMPLE_BUDGET = 1 << 20
 comptime _SHAPE_SAMPLE_BUDGET = 1 << 16
+comptime _GSUB_SAMPLE_BUDGET = 1 << 15
 comptime _CONSTRUCTION_OPERATIONS = 4096
 comptime _PROFILE_SCALARS = 4096
 comptime _PROFILE_ITERATIONS = 8192
@@ -118,6 +126,32 @@ def _ivs_text(sequence_count: Int) -> String:
             text += "本"  # Supported explicit mapping to glyph 5.
         else:
             text += "語"  # Unsupported UVS; preserve nominal glyph 4.
+        text += chr(0xE0100)
+    return text^
+
+
+def _gsub_text(table_case: Int, scalar_count: Int) -> String:
+    """Build all-hit text for the benchmark's two synthetic GSUB tables."""
+    var text = String()
+    for index in range(scalar_count):
+        if table_case == 0:
+            text += "A"  # cmap glyph 1; format 1 maps it to glyph 2.
+        else:
+            var position = index % 3
+            if position == 0:
+                text += "A"  # glyph 1 -> glyph 4
+            elif position == 1:
+                text += "日"  # glyph 2 -> glyph 5
+            else:
+                text += "本"  # glyph 3 -> glyph zero
+    return text^
+
+
+def _ivs_locl_text(sequence_count: Int) -> String:
+    """Build explicit CJK IVSes whose glyph 5 result is localized to glyph 1."""
+    var text = String()
+    for _ in range(sequence_count):
+        text += "本"
         text += chr(0xE0100)
     return text^
 
@@ -618,6 +652,237 @@ def _measure_ivs_shape_reuse(face: FontFace, sequence_count: Int) raises:
     )
 
 
+def _print_gsub_distribution(
+    case_identity: String,
+    fixture_identity: String,
+    run_identity: String,
+    input_scalars: Int,
+    output_glyphs: Int,
+    iterations: Int,
+    retained_capacity: Int,
+    checksum: Int,
+    mut elapsed: List[Int],
+):
+    var percentiles = _percentiles(elapsed)
+    var operations = input_scalars * iterations
+    print(
+        "case=",
+        case_identity,
+        " fixture=",
+        fixture_identity,
+        " run=",
+        run_identity,
+        " input_scalars=",
+        input_scalars,
+        " output_glyphs=",
+        output_glyphs,
+        " iterations=",
+        iterations,
+        " scalar_operations=",
+        operations,
+        " retained_capacity=",
+        retained_capacity,
+        " p50_elapsed_ns=",
+        percentiles[0],
+        " p95_elapsed_ns=",
+        percentiles[1],
+        " p50_ns_per_input_scalar=",
+        Float64(percentiles[0]) / Float64(operations),
+        " p95_ns_per_input_scalar=",
+        Float64(percentiles[1]) / Float64(operations),
+        " p50_million_input_scalars_per_second=",
+        Float64(operations) * 1000.0 / Float64(percentiles[0]),
+        " checksum=",
+        checksum,
+        sep="",
+    )
+
+
+def _measure_gsub_paths(
+    face: FontFace,
+    fixture_identity: String,
+    run_identity: String,
+    text: String,
+    input_scalars: Int,
+    style: TextStyle,
+) raises:
+    """Compare the public nominal oracle, allocating GSUB, and reused GSUB."""
+    var iterations = max(1, _GSUB_SAMPLE_BUDGET // input_scalars)
+    var nominal = shape_nominal(face, text, style)
+    var localized = shape(face, text, style)
+    var buffer = ShapeBuffer(capacity=len(localized))
+    shape_into(face, text, style, buffer)
+    var expected_nominal = _shape_checksum(nominal)
+    var expected_localized = _shape_checksum(localized)
+    if _shape_buffer_checksum(buffer) != expected_localized:
+        raise Error("allocating and reusable GSUB shaping checksums differ")
+    if expected_nominal == expected_localized:
+        raise Error("GSUB fixture did not change the nominal oracle")
+
+    for _ in range(_WARMUP_ROUNDS):
+        for _ in range(iterations):
+            nominal = shape_nominal(face, text, style)
+            keep(nominal)
+        for _ in range(iterations):
+            localized = shape(face, text, style)
+            keep(localized)
+        for _ in range(iterations):
+            shape_into(face, text, style, buffer)
+            keep(buffer)
+        if _shape_checksum(nominal) != expected_nominal:
+            raise Error("nominal GSUB oracle checksum changed during warmup")
+        if _shape_checksum(localized) != expected_localized:
+            raise Error("allocating GSUB checksum changed during warmup")
+        if _shape_buffer_checksum(buffer) != expected_localized:
+            raise Error("reusable GSUB checksum changed during warmup")
+
+    var nominal_elapsed = List[Int](capacity=_MEASUREMENTS)
+    var allocating_elapsed = List[Int](capacity=_MEASUREMENTS)
+    var reusable_elapsed = List[Int](capacity=_MEASUREMENTS)
+    for sample in range(_MEASUREMENTS):
+        if sample % 3 == 0:
+            var started = perf_counter_ns()
+            for _ in range(iterations):
+                nominal = shape_nominal(face, text, style)
+                keep(nominal)
+            nominal_elapsed.append(perf_counter_ns() - started)
+
+            started = perf_counter_ns()
+            for _ in range(iterations):
+                localized = shape(face, text, style)
+                keep(localized)
+            allocating_elapsed.append(perf_counter_ns() - started)
+
+            started = perf_counter_ns()
+            for _ in range(iterations):
+                shape_into(face, text, style, buffer)
+                keep(buffer)
+            reusable_elapsed.append(perf_counter_ns() - started)
+        elif sample % 3 == 1:
+            var started = perf_counter_ns()
+            for _ in range(iterations):
+                localized = shape(face, text, style)
+                keep(localized)
+            allocating_elapsed.append(perf_counter_ns() - started)
+
+            started = perf_counter_ns()
+            for _ in range(iterations):
+                shape_into(face, text, style, buffer)
+                keep(buffer)
+            reusable_elapsed.append(perf_counter_ns() - started)
+
+            started = perf_counter_ns()
+            for _ in range(iterations):
+                nominal = shape_nominal(face, text, style)
+                keep(nominal)
+            nominal_elapsed.append(perf_counter_ns() - started)
+        else:
+            var started = perf_counter_ns()
+            for _ in range(iterations):
+                shape_into(face, text, style, buffer)
+                keep(buffer)
+            reusable_elapsed.append(perf_counter_ns() - started)
+
+            started = perf_counter_ns()
+            for _ in range(iterations):
+                nominal = shape_nominal(face, text, style)
+                keep(nominal)
+            nominal_elapsed.append(perf_counter_ns() - started)
+
+            started = perf_counter_ns()
+            for _ in range(iterations):
+                localized = shape(face, text, style)
+                keep(localized)
+            allocating_elapsed.append(perf_counter_ns() - started)
+
+        if _shape_checksum(nominal) != expected_nominal:
+            raise Error("nominal GSUB oracle checksum changed")
+        if _shape_checksum(localized) != expected_localized:
+            raise Error("allocating GSUB checksum changed")
+        if _shape_buffer_checksum(buffer) != expected_localized:
+            raise Error("reusable GSUB checksum changed")
+
+    _print_gsub_distribution(
+        "shape_nominal_allocating_gsub_oracle",
+        fixture_identity,
+        run_identity,
+        input_scalars,
+        len(nominal),
+        iterations,
+        0,
+        expected_nominal,
+        nominal_elapsed,
+    )
+    _print_gsub_distribution(
+        "shape_locl_allocating",
+        fixture_identity,
+        run_identity,
+        input_scalars,
+        len(localized),
+        iterations,
+        0,
+        expected_localized,
+        allocating_elapsed,
+    )
+    _print_gsub_distribution(
+        "shape_into_locl_reuse",
+        fixture_identity,
+        run_identity,
+        input_scalars,
+        len(buffer),
+        iterations,
+        buffer.capacity(),
+        expected_localized,
+        reusable_elapsed,
+    )
+
+
+def _measure_selection_scaling(
+    face: FontFace,
+    fixture_identity: String,
+    run_identity: String,
+    scalar_count: Int,
+) raises:
+    """Measure public end-to-end lookup selection when no plan API exists."""
+    var text = _gsub_text(0, scalar_count)
+    var style = (
+        TextStyle().with_size(16.0).with_language(Language.JA).with_script(Script.HAN)
+    )
+    var iterations = max(1, _GSUB_SAMPLE_BUDGET // scalar_count)
+    var buffer = ShapeBuffer(capacity=scalar_count)
+    shape_into(face, text, style, buffer)
+    var expected = _shape_buffer_checksum(buffer)
+
+    for _ in range(_WARMUP_ROUNDS):
+        for _ in range(iterations):
+            shape_into(face, text, style, buffer)
+            keep(buffer)
+        if _shape_buffer_checksum(buffer) != expected:
+            raise Error("GSUB selector scaling checksum changed during warmup")
+
+    var elapsed = List[Int](capacity=_MEASUREMENTS)
+    for _ in range(_MEASUREMENTS):
+        var started = perf_counter_ns()
+        for _ in range(iterations):
+            shape_into(face, text, style, buffer)
+            keep(buffer)
+        elapsed.append(perf_counter_ns() - started)
+        if _shape_buffer_checksum(buffer) != expected:
+            raise Error("GSUB selector scaling checksum changed")
+
+    _print_gsub_distribution(
+        "shape_into_locl_selection_probe",
+        fixture_identity,
+        run_identity,
+        scalar_count,
+        len(buffer),
+        iterations,
+        buffer.capacity(),
+        expected,
+        elapsed,
+    )
+
+
 def _profile_allocating(face: FontFace) raises:
     var text = _mixed_text(_PROFILE_SCALARS)
     var style = TextStyle().with_size(16.0).with_language(Language.JA)
@@ -695,6 +960,32 @@ def _profile_ivs_reuse(face: FontFace) raises:
     )
 
 
+def _profile_gsub_format2_long(face: FontFace) raises:
+    var text = _gsub_text(1, _PROFILE_SCALARS)
+    var style = TextStyle().with_size(16.0)
+    var buffer = ShapeBuffer(capacity=_PROFILE_SCALARS)
+    shape_into(face, text, style, buffer)
+    var expected = _shape_buffer_checksum(buffer)
+    for _ in range(_PROFILE_ITERATIONS):
+        shape_into(face, text, style, buffer)
+        keep(buffer)
+    if _shape_buffer_checksum(buffer) != expected:
+        raise Error("GSUB format 2 reusable profile checksum changed")
+    print(
+        "profile=shape_into_locl_format2_coverage2_long scalar_count=",
+        _PROFILE_SCALARS,
+        " iterations=",
+        _PROFILE_ITERATIONS,
+        " scalar_operations=",
+        _PROFILE_SCALARS * _PROFILE_ITERATIONS,
+        " retained_capacity=",
+        buffer.capacity(),
+        " checksum=",
+        expected,
+        sep="",
+    )
+
+
 def main() raises:
     # Parse reusable hot-path fixtures exactly once before their timing regions.
     var font_bytes = make_test_font()
@@ -713,12 +1004,19 @@ def main() raises:
             var uvs_profile_face = FontFace.from_bytes(uvs_profile_bytes^)
             _profile_ivs_reuse(uvs_profile_face)
             return
+        if mode == "--profile-gsub-format2-long":
+            var profile_gsub = make_gsub_single_format2_coverage2()
+            var profile_bytes = make_test_font_with_gsub(profile_gsub^)
+            var profile_face = FontFace.from_bytes(profile_bytes^)
+            _profile_gsub_format2_long(profile_face)
+            return
         raise Error("unknown benchmark mode: ", mode)
     print(
-        "schema=kumihan-core-benchmark-v4 mojo=1.0.0 ",
+        "schema=kumihan-core-benchmark-v5 mojo=1.0.0 ",
         "build=mojo-build-O3 measurements=31 warmup_rounds=3 ",
-        "statistic=nearest-rank-p50-p95 scope=synthetic-foundation ",
-        "fixtures=test-font-format12,test-uvs-font-format12-plus-format14",
+        "statistic=nearest-rank-p50-p95 scope=synthetic-foundation-and-gsub ",
+        "fixtures=format12,format14,gsub-single1-coverage1,",
+        "gsub-single2-coverage2,gsub-cjk-seven-lookup",
         sep="",
     )
     var construction_template = make_test_font()
@@ -737,3 +1035,63 @@ def main() raises:
         _measure_shape_paths(face, scalar_count)
     for sequence_count in [128, 2048, 32768]:
         _measure_ivs_shape_reuse(uvs_face, sequence_count)
+
+    var gsub1 = make_gsub_single_format1()
+    var gsub1_bytes = make_test_font_with_gsub(gsub1^)
+    var gsub1_face = FontFace.from_bytes(gsub1_bytes^)
+    var gsub2 = make_gsub_single_format2_coverage2()
+    var gsub2_bytes = make_test_font_with_gsub(gsub2^)
+    var gsub2_face = FontFace.from_bytes(gsub2_bytes^)
+    var gsub_style = TextStyle().with_size(16.0)
+    for scalar_count in [16, 4096]:
+        var run_identity = "short" if scalar_count == 16 else "long"
+        var format1_text = _gsub_text(0, scalar_count)
+        _measure_gsub_paths(
+            gsub1_face,
+            "single_format1_coverage1",
+            run_identity,
+            format1_text^,
+            scalar_count,
+            gsub_style,
+        )
+        var format2_text = _gsub_text(1, scalar_count)
+        _measure_gsub_paths(
+            gsub2_face,
+            "single_format2_coverage2",
+            run_identity,
+            format2_text^,
+            scalar_count,
+            gsub_style,
+        )
+
+    var cjk_bytes = make_test_cjk_gsub_font()
+    var cjk_face = FontFace.from_bytes(cjk_bytes^)
+    for scalar_count in [16, 4096]:
+        var run_identity = "short" if scalar_count == 16 else "long"
+        _measure_selection_scaling(
+            gsub1_face,
+            "dflt_one_lookup",
+            run_identity,
+            scalar_count,
+        )
+        _measure_selection_scaling(
+            cjk_face,
+            "hani_jan_seven_lookup",
+            run_identity,
+            scalar_count,
+        )
+
+    var ivs_locl_gsub = make_gsub_single_format1(input_glyph=5, delta=-4)
+    var ivs_locl_bytes = make_test_font_with_gsub(ivs_locl_gsub^, with_uvs=True)
+    var ivs_locl_face = FontFace.from_bytes(ivs_locl_bytes^)
+    for sequence_count in [8, 2048]:
+        var run_identity = "short" if sequence_count == 8 else "long"
+        var ivs_locl = _ivs_locl_text(sequence_count)
+        _measure_gsub_paths(
+            ivs_locl_face,
+            "explicit_ivs_then_single_format1_coverage1",
+            run_identity,
+            ivs_locl^,
+            2 * sequence_count,
+            gsub_style,
+        )

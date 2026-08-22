@@ -7,8 +7,11 @@ from kumihan import (
     FontFace,
     GlyphRun,
     Language,
+    Script,
     ShapeBuffer,
     TextStyle,
+    shape,
+    shape_into,
     shape_nominal,
     shape_nominal_into,
 )
@@ -81,15 +84,64 @@ def _make_cmap12() -> List[UInt8]:
     return data^
 
 
+def _make_gsub() -> List[UInt8]:
+    """Build DFLT/locl SingleSubst mappings 1->2 and 2->1."""
+    var data = List[UInt8](length=74, fill=UInt8(0))
+    _write_u16(data, 0, 1)
+    _write_u16(data, 2, 0)
+    _write_u16(data, 4, 10)
+    _write_u16(data, 6, 30)
+    _write_u16(data, 8, 44)
+
+    # ScriptList: DFLT with one DefaultLangSys selecting feature zero.
+    _write_u16(data, 10, 1)
+    _write_u32(data, 12, 0x44464C54)
+    _write_u16(data, 16, 8)
+    _write_u16(data, 18, 4)
+    _write_u16(data, 20, 0)
+    _write_u16(data, 22, 0)
+    _write_u16(data, 24, 0xFFFF)
+    _write_u16(data, 26, 1)
+    _write_u16(data, 28, 0)
+
+    # FeatureList: locl -> lookup zero.
+    _write_u16(data, 30, 1)
+    _write_u32(data, 32, 0x6C6F636C)
+    _write_u16(data, 36, 8)
+    _write_u16(data, 38, 0)
+    _write_u16(data, 40, 1)
+    _write_u16(data, 42, 0)
+
+    # LookupList: SingleSubst format 2 with Coverage format 1.
+    _write_u16(data, 44, 1)
+    _write_u16(data, 46, 4)
+    _write_u16(data, 48, 1)
+    _write_u16(data, 50, 0)
+    _write_u16(data, 52, 1)
+    _write_u16(data, 54, 8)
+    _write_u16(data, 56, 2)
+    _write_u16(data, 58, 10)
+    _write_u16(data, 60, 2)
+    _write_u16(data, 62, 2)
+    _write_u16(data, 64, 1)
+    _write_u16(data, 66, 1)
+    _write_u16(data, 68, 2)
+    _write_u16(data, 70, 1)
+    _write_u16(data, 72, 2)
+    return data^
+
+
 def _make_test_font() -> List[UInt8]:
     var cmap = _make_cmap12()
-    comptime table_count = 5
-    comptime head_offset = 92
-    comptime maxp_offset = 148
-    comptime hhea_offset = 156
-    comptime hmtx_offset = 192
-    comptime cmap_offset = 204
-    var data = List[UInt8](length=cmap_offset + len(cmap), fill=UInt8(0))
+    var gsub = _make_gsub()
+    comptime table_count = 6
+    comptime head_offset = 108
+    comptime maxp_offset = 164
+    comptime hhea_offset = 172
+    comptime hmtx_offset = 208
+    comptime cmap_offset = 220
+    comptime gsub_offset = 312
+    var data = List[UInt8](length=gsub_offset + len(gsub), fill=UInt8(0))
 
     _write_u32(data, 0, 0x00010000)
     _write_u16(data, 4, table_count)
@@ -100,6 +152,7 @@ def _make_test_font() -> List[UInt8]:
         0x6D617870,  # maxp
         0x68656164,  # head
         0x68686561,  # hhea
+        0x47535542,  # GSUB
     ]
     var offsets: List[Int] = [
         hmtx_offset,
@@ -107,8 +160,9 @@ def _make_test_font() -> List[UInt8]:
         maxp_offset,
         head_offset,
         hhea_offset,
+        gsub_offset,
     ]
-    var lengths: List[Int] = [12, len(cmap), 6, 54, 36]
+    var lengths: List[Int] = [12, len(cmap), 6, 54, 36, len(gsub)]
     for index in range(table_count):
         var record = 12 + 16 * index
         _write_u32(data, record, tags[index])
@@ -137,6 +191,8 @@ def _make_test_font() -> List[UInt8]:
 
     for index in range(len(cmap)):
         data[cmap_offset + index] = cmap[index]
+    for index in range(len(gsub)):
+        data[gsub_offset + index] = gsub[index]
     return data^
 
 
@@ -155,6 +211,7 @@ def main() raises:
         TextStyle()
         .with_size(20.0)
         .with_language(Language.JA)
+        .with_script(Script.HAN)
         .with_direction(Direction.LEFT_TO_RIGHT)
     )
 
@@ -169,6 +226,14 @@ def main() raises:
     assert_true(run.total_x_advance() == 32.0)
     assert_equal(run.missing_glyph_count(), 0)
     run.validate_against_source("A日")
+
+    var localized: GlyphRun = shape(face, "A日", style)
+    assert_equal(localized.glyph_ids()[0], 2)
+    assert_equal(localized.glyph_ids()[1], 1)
+    assert_true(localized.x_advances()[0] == 20.0)
+    assert_true(localized.x_advances()[1] == 12.0)
+    assert_true(localized.script() == Script.HAN)
+    localized.validate_against_source("A日")
 
     var output = ShapeBuffer(capacity=2)
     shape_nominal_into(face, "日A", style, output)
@@ -189,4 +254,10 @@ def main() raises:
     assert_equal(output.cluster_starts()[0], 0)
     assert_equal(output.cluster_ends()[0], ivs.byte_length())
     assert_true(output.total_x_advance() == 12.0)
+    output.validate_against_source(ivs)
+
+    shape_into(face, ivs, style, output)
+    assert_equal(output.glyph_ids()[0], 2)
+    assert_equal(output.cluster_ends()[0], ivs.byte_length())
+    assert_true(output.total_x_advance() == 20.0)
     output.validate_against_source(ivs)

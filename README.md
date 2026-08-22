@@ -7,11 +7,11 @@ Mojo.
 
 Kumihan is the font and shaping layer for the Mojo graphics ecosystem. It is
 designed for complete CJK typography without making a plotting or rendering
-library own a second font stack. Kumihan deliberately starts below
-complex shaping: it validates SFNT and TrueType Collection structure, reads
-global and horizontal metrics, maps Unicode scalars through `cmap` formats 4
-and 12, resolves font-declared Unicode variation sequences through `cmap`
-format 14, and produces nominal horizontal glyph runs.
+library own a second font stack. Kumihan validates SFNT and TrueType Collection
+structure, maps Unicode through `cmap` formats 4, 12, and 14, and produces
+renderer-neutral horizontal glyph runs. Its first OpenType shaping slice adds
+validated GSUB layout selection and CJK-localized SingleSubst forms. GSUB 1.1
+FeatureVariations are bounded safely but use the default Feature tables.
 
 ## Install
 
@@ -43,17 +43,29 @@ Style modifiers return an updated value, so configuration reads from left to
 right and does not require a mutable option object:
 
 ```mojo
-from kumihan import Language, TextStyle
+from kumihan import Language, Script, TextStyle
 
 
 def main() raises:
-    var style = TextStyle().with_size(16.0).with_language(Language.JA)
+    var style = (
+        TextStyle()
+        .with_size(16.0)
+        .with_language(Language.JA)
+        .with_script(Script.HAN)
+    )
 ```
 
-`TextStyle`, `Language`, `Direction`, `FontCollection`, `FontFace`, `GlyphRun`,
-`ShapeBuffer`, `shape_nominal`, and `shape_nominal_into` form the intended small
-root surface. Font parsing, validated style modifiers, and nominal shaping are
-fallible; default construction and inspection are ordinary value operations.
+`TextStyle`, `Language`, `Script`, `Direction`, `FontCollection`, `FontFace`,
+`GlyphRun`, `ShapeBuffer`, `shape`, `shape_into`, `shape_nominal`, and
+`shape_nominal_into` form the intended small root surface. Font parsing,
+validated style modifiers, and shaping are fallible; default construction and
+inspection are ordinary value operations.
+
+Use `shape` for normal horizontal text. It applies required features and
+language-selected `locl` SingleSubst lookups automatically. Use
+`shape_nominal` when an exact cmap-plus-hmtx result is required as a reference
+or inspection oracle. Callers currently provide one script per run; mixed-script
+text must be segmented before shaping.
 
 ## Current foundation
 
@@ -66,16 +78,21 @@ fallible; default construction and inspection are ordinary value operations.
 - Map Unicode scalars to nominal glyph IDs and horizontal advances.
 - Consume a supported or unsupported base-plus-variation-selector pair as one
   UTF-8 source cluster during nominal shaping.
+- Validate GSUB 1.0 plus the default-feature path of GSUB 1.1: ScriptList,
+  LangSys, FeatureList, LookupList, Coverage formats 1/2, SingleSubst formats
+  1/2, and ExtensionSubst type 7 to type 1.
+- Apply required and `locl` lookups in LookupList order with exact CJK script
+  and language-system selection, stable clusters, and final-glyph metrics.
 - Retain explicit direction, language, style, cluster, and glyph-run contracts
   that later shaping can extend without changing renderer APIs.
 - Parse a font face once and reuse sorted-table lookup state across text runs.
 
 This is not yet a complete CJK text engine. Kumihan does **not** yet implement
-GSUB/GPOS shaping, a bundled registry of sanctioned Unicode variation
-sequences, glyph outlines, system-font discovery or locale-aware fallback,
-bidirectional layout, CJK line breaking, vertical layout, or rasterization.
-These are roadmap work, not hidden best-effort behavior. See
-[scope and roadmap](docs/scope.md).
+GPOS or GSUB beyond required/`locl` SingleSubst, automatic Unicode script
+itemization, a bundled registry of sanctioned Unicode variation sequences,
+glyph outlines, system-font discovery or locale-aware fallback, bidirectional
+layout, CJK line breaking, vertical layout, or rasterization. These are roadmap
+work, not hidden best-effort behavior. See [scope and roadmap](docs/scope.md).
 
 ## Ecosystem boundary
 

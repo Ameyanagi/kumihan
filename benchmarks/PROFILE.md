@@ -2,8 +2,9 @@
 
 Recorded 2026-08-22 on an Apple M4 running macOS 26.5.1 (25F80), Mojo
 1.0.0 (`ed45d567`), and xctrace 26.0 (17C52). These findings cover only the
-small deterministic synthetic font and nominal shaping implemented by v0.1;
-they are not a proxy for full OpenType shaping or real CJK font parsing.
+small deterministic synthetic fonts, nominal shaping, and the current
+SingleSubst `locl` slice; they are not a proxy for full OpenType shaping or
+real CJK font parsing.
 
 ## Reproduce
 
@@ -102,3 +103,154 @@ for one repeated selector would add state and can regress mixed-selector text,
 while the profile attributes too little exclusive time to justify it. Revisit
 only with real CJK fonts containing larger format 14 tables and a matching
 correctness oracle.
+
+## GSUB/`locl` pre-selection-mask baseline
+
+Provenance: this baseline was recorded from an uncommitted intermediate GSUB
+working tree derived from commit `be09c36a31a5bc6c612df999d7f79bbdf735dcd3`.
+It is a before-change measurement, not the output of a standalone commit.
+
+The v5 O3 protocol adds public-workflow comparisons for SingleSubst format 1
+with Coverage format 1, SingleSubst format 2 with Coverage format 2, and an
+explicit IVS followed by `locl`. “Short” is 16 input scalars and “long” is
+4,096; every row below represents 32,768 input scalar operations per sample.
+These are exact p50/p95 results from the same Apple M4 host before the planned
+lookup-selection-mask change:
+
+| Fixture and public path | Run | p50 ns/scalar | p95 ns/scalar | Checksum |
+| --- | ---: | ---: | ---: | ---: |
+| format1/Coverage1 `shape_nominal` | short | 52.612 | 56.641 | 1,076,528 |
+| format1/Coverage1 `shape` | short | 90.668 | 96.466 | 1,793,464 |
+| format1/Coverage1 `shape_into` | short | 65.887 | 70.343 | 1,793,464 |
+| format1/Coverage1 `shape_nominal` | long | 29.083 | 29.297 | 359,149,568 |
+| format1/Coverage1 `shape` | long | 57.495 | 58.228 | 551,041,024 |
+| format1/Coverage1 `shape_into` | long | 57.281 | 57.617 | 551,041,024 |
+| format2/Coverage2 `shape_nominal` | short | 51.880 | 52.338 | 1,525,978 |
+| format2/Coverage2 `shape` | short | 92.987 | 93.506 | 1,515,001 |
+| format2/Coverage2 `shape_into` | short | 68.024 | 68.481 | 1,515,001 |
+| format2/Coverage2 `shape_nominal` | long | 27.985 | 28.839 | 579,310,418 |
+| format2/Coverage2 `shape` | long | 60.547 | 61.432 | 572,481,081 |
+| format2/Coverage2 `shape_into` | long | 59.601 | 59.845 | 572,481,081 |
+| IVS-to-format1/Coverage1 `shape_nominal` | short | 57.861 | 58.105 | 898,120 |
+| IVS-to-format1/Coverage1 `shape` | short | 79.620 | 80.353 | 539,576 |
+| IVS-to-format1/Coverage1 `shape_into` | short | 54.871 | 55.115 | 539,576 |
+| IVS-to-format1/Coverage1 `shape_nominal` | long | 32.898 | 33.051 | 359,434,240 |
+| IVS-to-format1/Coverage1 `shape` | long | 46.814 | 47.394 | 259,291,136 |
+| IVS-to-format1/Coverage1 `shape_into` | long | 46.051 | 46.143 | 259,291,136 |
+
+The public selector probe holds the glyph workload constant and changes the
+synthetic table from one DFLT lookup to seven lookup/feature records selected
+through `hani`/`JAN`. At 16 scalars, `shape_into` rose from p50/p95
+66.315/66.498 to 83.649/83.862 ns/scalar: about 277 ns extra per call. At 4,096
+scalars the corresponding results were 55.939/56.122 and 55.878/56.030
+ns/scalar, indistinguishable at this resolution. This is evidence of fixed
+per-call selection cost that matters for short labels, while glyph execution
+dominates long runs. It does not isolate plan selection because no public
+shape-plan or selection/execution boundary exists.
+
+The dominant reusable format2/Coverage2 long case is reproducible with:
+
+```sh
+xcrun xctrace record \
+  --template 'Time Profiler' \
+  --output "$kumihan_profile_dir/time-gsub-format2-long.trace" \
+  --no-prompt \
+  --launch -- "$PWD/.pixi/bench-core" --profile-gsub-format2-long
+```
+
+The mode performs 8,192 retained-buffer calls, or 33,554,432 input scalar
+operations, and must report capacity `4096` and checksum `572481081`. A direct
+run took 1.75 s user time with 12,599,296-byte maximum RSS. The xctrace run
+recorded 2,167 rows, of which 1,635 had no unwindable top stack. Of the 519
+resolved application hot-path top stacks, 284 were in `shape_nominal_into`,
+150 in the enclosing `shape_into`, 71 in 16-bit table reads, 10 in format-12
+cmap lookup, and 4 in 32-bit table reads. O3 inlining prevents reliable
+exclusive attribution of coverage selection versus substitution inside
+`shape_into`, so the latency distributions remain the authority.
+
+This profile does not justify SIMD. UTF-8/cmap traversal, ordered lookup
+application, variable-size coverage binary search, and bounded font-table reads
+are branch-heavy and do not expose a regular vectorizable kernel. The short-run
+selector result does justify removing repeated selection membership work with
+a retained scalar lookup mask if adversarial table complexity is also bounded;
+the identical long-run probe shows why broad glyph-path caching or SIMD would
+be premature.
+
+## GSUB/`locl` initial post-selection-mask result
+
+After `ShapeBuffer` gained a retained UInt8 lookup mask, feature edges are
+resolved once and preflight/execution traverse the mask linearly. The exact
+same v5 binary protocol was rebuilt with O3 and repeated before the subsequent
+feature-offset scratch/dedup correction. The clean selector run was:
+
+| Public `shape_into` selector probe | Run | p50 ns/scalar | p95 ns/scalar | Checksum |
+| --- | ---: | ---: | ---: | ---: |
+| DFLT, one lookup | short | 64.331 | 64.606 | 1,793,464 |
+| `hani`/`JAN`, seven lookups | short | 66.284 | 66.681 | 1,793,600 |
+| DFLT, one lookup | long | 56.213 | 56.396 | 551,041,024 |
+| `hani`/`JAN`, seven lookups | long | 56.763 | 56.946 | 559,431,680 |
+
+The incremental short-run breadth cost fell from about 277 ns/call before the
+mask to about 31 ns/call after it, an 88.7% reduction. The seven/one p50 ratio
+fell from 1.261 to 1.030. Long rows remain within 1% because per-glyph coverage,
+substitution, and advance recomputation dominate. Independent repeat runs put
+the post-mask short seven/one ratio between 1.008 and 1.067; the exact clean
+run above is retained rather than averaging benchmark distributions.
+
+The dominant format2/Coverage2 long `shape_into` row changed from p50/p95
+59.601/59.845 to 60.272/60.577 ns/scalar, a 1.1–1.2% difference on this host.
+The fixed 33,554,432-scalar profile mode changed from 1.75 to 1.80 s user time,
+6,625,645,454 to 6,661,897,558 cycles, and 35,983,328,559 to 36,181,452,086
+retired instructions. The approximately 0.55% cycle/instruction change is the
+expected small cost of preparing a one-entry mask and is below the variance of
+the elapsed distribution; maximum RSS fell from 12,599,296 to 12,566,528 bytes.
+
+The post-mask xctrace export contained 1,835 rows, with 1,542 lacking an
+unwindable top stack. Its 285 resolved application hot-path top stacks were 234
+in `shape_nominal_into`, 40 in 16-bit table reads, 8 in 32-bit table reads, and
+3 in format-12 cmap lookup. O3 inlined the GSUB body and did not expose a new
+named mask or vector kernel. Different unwind rates make sample-count deltas
+between the two traces non-comparable, but both support the distribution result:
+long input remains dominated by nominal mapping and scalar table traversal.
+
+The mask is justified both by the measured short-run improvement and by the
+algorithmic change from repeated O(lookup-count × selected-edge-count)
+membership scans to O(selected-edge-count + lookup-count). No second cache or
+public plan API is warranted by these synthetic results. SIMD remains
+unjustified; the changed work is a small, branch-dependent graph-to-byte-mask
+resolution followed by ordered scalar table execution.
+
+## Final feature-offset scratch rerun
+
+Provenance: the source was the final uncommitted feature-offset scratch/dedup
+working tree derived from
+`be09c36a31a5bc6c612df999d7f79bbdf735dcd3`. The forthcoming feature commit SHA
+was **PENDING (not yet created)** when this profile was recorded; replace this
+placeholder only after that commit exists.
+
+The unchanged v5 harness was rebuilt with stable Mojo 1.0.0 and O3. A clean
+repeat produced:
+
+| Public `shape_into` case | Run | p50 ns/scalar | p95 ns/scalar | Checksum |
+| --- | ---: | ---: | ---: | ---: |
+| DFLT, one-lookup selector probe | short | 73.090 | 73.181 | 1,793,464 |
+| `hani`/`JAN`, seven-lookup selector probe | short | 69.855 | 75.470 | 1,793,600 |
+| DFLT, one-lookup selector probe | long | 59.631 | 59.937 | 551,041,024 |
+| `hani`/`JAN`, seven-lookup selector probe | long | 59.235 | 64.026 | 559,431,680 |
+| format2/Coverage2 | long | 67.932 | 68.085 | 572,481,081 |
+
+The exact-script `hani` path and DFLT fallback are not identical selector
+workloads, so a slightly lower seven-lookup p50 is not a negative lookup cost.
+It means the retained scratch has reduced lookup breadth below other fixed
+script-selection differences in this synthetic public-workflow probe. The
+earlier 1.261 seven/one short-run ratio remains eliminated; this repeat's ratio
+is 0.956 at p50 and 1.031 at p95.
+
+The wall-time distribution was recorded at a slower host-frequency/load point
+than the initial post-mask table. The fixed 33,554,432-scalar profile mode is a
+better regression check: its first clean run reported 1.77 s user time,
+6,547,311,134 cycles, 36,181,655,437 retired instructions, and 12,632,064-byte
+maximum RSS. Relative to the initial post-mask profile, instructions changed
+by only +0.0006% and cycles improved by about 1.7%. The feature-offset scratch
+therefore does not materially change the dominant long-run work. No additional
+xctrace recording or SIMD change is justified by this rerun.

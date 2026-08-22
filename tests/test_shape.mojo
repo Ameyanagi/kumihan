@@ -1,11 +1,29 @@
-from kumihan.sfnt import FontFace
-from kumihan.shape import GlyphRun, ShapeBuffer, shape_nominal, shape_nominal_into
-from kumihan.style import Direction, Language, TextStyle
+from kumihan import (
+    Direction,
+    FontFace,
+    GlyphRun,
+    Language,
+    Script,
+    ShapeBuffer,
+    TextStyle,
+    shape,
+    shape_into,
+    shape_nominal,
+    shape_nominal_into,
+)
 from std.testing import TestSuite, assert_equal, assert_raises, assert_true
 
 from support.font_fixture import (
+    _write_u16,
+    _write_u32,
+    make_gsub_selected_unsupported,
+    make_gsub_single_format1,
+    make_gsub_single_format2_coverage2,
     make_glyph_advance_overflow_font,
+    make_test_cjk_gsub_font,
     make_test_font,
+    make_test_font_with_gsub,
+    make_test_gsub_font,
     make_test_uvs_explicit_glyph_zero_font,
     make_test_uvs_font,
 )
@@ -46,20 +64,47 @@ def test_nominal_language_tags_and_directions_are_explicit() raises:
     assert_true(Direction.LEFT_TO_RIGHT.is_left_to_right())
 
 
+def test_cjk_script_tags_are_compact_and_explicit() raises:
+    assert_equal(Script.DEFAULT.tag(), "DFLT")
+    assert_equal(Script.HAN.open_type_tag(), "hani")
+    assert_equal(Script.KANA.tag(), "kana")
+    assert_equal(Script.HANGUL.tag(), "hang")
+    assert_equal(Script.BOPOMOFO.tag(), "bopo")
+    assert_true(Script.DEFAULT._open_type_tag() == 0x44464C54)
+    assert_true(Script.HAN._open_type_tag() == 0x68616E69)
+    assert_true(Language.UND._open_type_tag() == 0x64666C74)
+    assert_true(Language.JA._open_type_tag() == 0x4A414E20)
+    assert_true(Language.KO._open_type_tag() == 0x4B4F5220)
+    assert_true(Language.ZH_HANS._open_type_tag() == 0x5A485320)
+    assert_true(Language.ZH_HANT._open_type_tag() == 0x5A485420)
+    assert_true(Language.ZH_HANT_HK._open_type_tag() == 0x5A484820)
+
+
 def test_text_style_chain_returns_copies() raises:
     var original = TextStyle()
     var styled = (
         original.with_size(20.0)
         .with_language(Language.JA)
+        .with_script(Script.HAN)
         .with_direction(Direction.LEFT_TO_RIGHT)
     )
 
     assert_true(original.size() == 16.0)
     assert_true(original.language() == Language.UND)
+    assert_true(original.script() == Script.DEFAULT)
     assert_true(original.direction() == Direction.LEFT_TO_RIGHT)
     assert_true(styled.size() == 20.0)
     assert_true(styled.language() == Language.JA)
+    assert_true(styled.script() == Script.HAN)
     assert_true(styled.direction() == Direction.LEFT_TO_RIGHT)
+
+    var constructed = TextStyle(
+        size=24.0,
+        language=Language.KO,
+        script=Script.HANGUL,
+    )
+    assert_true(constructed.script() == Script.HANGUL)
+    assert_true(constructed != styled)
 
 
 def test_text_style_rejects_invalid_values() raises:
@@ -70,6 +115,8 @@ def test_text_style_rejects_invalid_values() raises:
         _ = style.with_size(Float64("inf"))
     with assert_raises(contains="invalid Kumihan language discriminant"):
         _ = style.with_language(Language(_value=99))
+    with assert_raises(contains="invalid Kumihan script tag"):
+        _ = style.with_script(Script(_value=0x62616421))
     with assert_raises(contains="invalid Kumihan direction discriminant"):
         _ = style.with_direction(Direction(_value=-1))
 
@@ -82,6 +129,7 @@ def test_shape_nominal_maps_cjk_once_and_preserves_utf8_clusters() raises:
     assert_true(len(run) == 5)
     assert_true(run.source_byte_length() == 14)
     assert_true(run.language() == Language.JA)
+    assert_true(run.script() == Script.DEFAULT)
     assert_true(run.direction() == Direction.LEFT_TO_RIGHT)
     assert_true(run.font_size() == 20.0)
     assert_true(run.missing_glyph_count() == 0)
@@ -111,6 +159,213 @@ def test_shape_nominal_maps_cjk_once_and_preserves_utf8_clusters() raises:
     assert_true(run.line_gap() == 2.0)
     run.validate()
     run.validate_against_source("A日本語𠀀")
+
+
+def test_shape_matches_nominal_when_font_has_no_gsub() raises:
+    var face = _test_face()
+    var style = (
+        TextStyle().with_size(20.0).with_language(Language.JA).with_script(Script.HAN)
+    )
+    var nominal = shape_nominal(face, "A日本語𠀀", style)
+    var shaped = shape(face, "A日本語𠀀", style)
+
+    assert_true(len(shaped) == len(nominal))
+    assert_true(shaped.script() == Script.HAN)
+    assert_true(shaped.language() == Language.JA)
+    assert_true(shaped.total_x_advance() == nominal.total_x_advance())
+    assert_true(shaped.missing_glyph_count() == nominal.missing_glyph_count())
+    for index in range(len(shaped)):
+        assert_true(shaped.glyph_ids()[index] == nominal.glyph_ids()[index])
+        assert_true(shaped.x_advances()[index] == nominal.x_advances()[index])
+        assert_true(shaped.cluster_starts()[index] == nominal.cluster_starts()[index])
+        assert_true(shaped.cluster_ends()[index] == nominal.cluster_ends()[index])
+    shaped.validate_against_source("A日本語𠀀")
+
+
+def test_shape_applies_locl_and_recomputes_final_advance() raises:
+    var bytes = make_test_gsub_font()
+    var face = FontFace.from_bytes(bytes^)
+    var nominal = shape_nominal(face, "A", TextStyle())
+    var localized = shape(face, "A", TextStyle())
+
+    # Nominal shaping remains the exact cmap+hmtx oracle even when GSUB exists.
+    assert_true(nominal.glyph_ids()[0] == 1)
+    assert_true(nominal.x_advances()[0] == 9.6)
+    assert_true(localized.glyph_ids()[0] == 2)
+    assert_true(localized.x_advances()[0] == 16.0)
+    assert_true(localized.total_x_advance() == 16.0)
+    assert_true(localized.cluster_starts()[0] == 0)
+    assert_true(localized.cluster_ends()[0] == 1)
+    localized.validate_against_source("A")
+
+
+def test_shape_selects_public_cjk_script_and_language_systems() raises:
+    var bytes = make_test_cjk_gsub_font()
+    var face = FontFace.from_bytes(bytes^)
+    var cases = [
+        (Script.DEFAULT, Language.UND, 2),
+        (Script.HAN, Language.JA, 3),
+        (Script.HAN, Language.ZH_HANS, 4),
+        (Script.HAN, Language.ZH_HANT_HK, 5),
+        (Script.HAN, Language.ZH_HANT, 1),
+        (Script.HANGUL, Language.KO, 4),
+        (Script.KANA, Language.JA, 3),
+        (Script.BOPOMOFO, Language.UND, 5),
+    ]
+    for script, language, expected_glyph in cases:
+        var localized = shape(
+            face,
+            "A",
+            TextStyle().with_script(script).with_language(language),
+        )
+        assert_true(localized.glyph_ids()[0] == expected_glyph)
+        assert_true(localized.script() == script)
+        assert_true(localized.language() == language)
+        localized.validate_against_source("A")
+
+
+def test_shape_buffer_reuses_and_clears_gsub_feature_scratch() raises:
+    var bytes = make_test_cjk_gsub_font()
+    var face = FontFace.from_bytes(bytes^)
+    var output = ShapeBuffer(capacity=8)
+
+    shape_into(
+        face,
+        "A",
+        TextStyle().with_script(Script.HAN).with_language(Language.JA),
+        output,
+    )
+    assert_equal(len(output._gsub_feature_offsets), 1)
+    var japanese_feature = output._gsub_feature_offsets[0]
+    var retained_capacity = output._gsub_feature_offsets.capacity()
+
+    shape_into(
+        face,
+        "A",
+        TextStyle().with_script(Script.HAN).with_language(Language.ZH_HANS),
+        output,
+    )
+    assert_equal(len(output._gsub_feature_offsets), 1)
+    assert_true(output._gsub_feature_offsets[0] != japanese_feature)
+    assert_equal(output._gsub_feature_offsets.capacity(), retained_capacity)
+
+    shape_into(face, "", TextStyle(), output)
+    assert_equal(len(output._gsub_feature_offsets), 0)
+    assert_equal(output._gsub_feature_offsets.capacity(), retained_capacity)
+
+
+def test_shape_recomputes_missing_count_after_glyph_zero_locl() raises:
+    var gsub = make_gsub_single_format2_coverage2()
+    var bytes = make_test_font_with_gsub(gsub^)
+    var face = FontFace.from_bytes(bytes^)
+    var localized = shape(face, "本", TextStyle())
+
+    assert_true(localized.glyph_ids()[0] == 0)
+    assert_true(localized.x_advances()[0] == 8.0)
+    assert_true(localized.total_x_advance() == 8.0)
+    assert_true(localized.missing_glyph_count() == 1)
+    localized.validate_against_source("本")
+
+
+def test_shape_applies_locl_after_explicit_cjk_ivs() raises:
+    var gsub = make_gsub_single_format1(input_glyph=5, delta=-4)
+    var bytes = make_test_font_with_gsub(gsub^, with_uvs=True)
+    var face = FontFace.from_bytes(bytes^)
+    var text = _variation_sequence("本", 0xE0100)
+    var nominal = shape_nominal(face, text, TextStyle())
+    var localized = shape(face, text, TextStyle())
+
+    assert_true(nominal.glyph_ids()[0] == 5)
+    assert_true(localized.glyph_ids()[0] == 1)
+    assert_true(localized.cluster_starts()[0] == 0)
+    assert_true(localized.cluster_ends()[0] == 7)
+    assert_true(localized.x_advances()[0] == 9.6)
+    assert_true(localized.total_x_advance() == 9.6)
+    localized.validate_against_source(text)
+
+
+def test_selected_unsupported_locl_clears_reusable_output() raises:
+    var good_face = _test_face()
+    var output = ShapeBuffer(capacity=8)
+    shape_into(good_face, "A日本", TextStyle(), output)
+    var retained_capacity = output.capacity()
+
+    var gsub = make_gsub_selected_unsupported()
+    var bytes = make_test_font_with_gsub(gsub^)
+    var unsupported_face = FontFace.from_bytes(bytes^)
+    with assert_raises(contains="unsupported selected GSUB lookup type"):
+        shape_into(unsupported_face, "A", TextStyle(), output)
+    assert_true(output.is_empty())
+    assert_true(output.capacity() == retained_capacity)
+    assert_true(output.source_byte_length() == 0)
+    assert_true(output.script() == Script.DEFAULT)
+
+
+def test_required_vertical_feature_is_rejected_before_horizontal_mutation() raises:
+    var output = ShapeBuffer(capacity=8)
+    # vert, vrt2, vrtr, and vkna are vertical-only under the horizontal API.
+    for tag in [0x76657274, 0x76727432, 0x76727472, 0x766B6E61]:
+        var gsub = make_gsub_single_format1()
+        _write_u16(gsub, 24, 0)  # requiredFeatureIndex
+        _write_u32(gsub, 32, tag)
+        var bytes = make_test_font_with_gsub(gsub^)
+        var face = FontFace.from_bytes(bytes^)
+        with assert_raises(contains="vertical feature is unsupported"):
+            shape_into(face, "A", TextStyle(), output)
+        assert_true(output.is_empty())
+        assert_true(output.capacity() >= 8)
+
+
+def test_empty_shape_skips_selected_unsupported_lookup() raises:
+    var gsub = make_gsub_selected_unsupported()
+    var bytes = make_test_font_with_gsub(gsub^)
+    var face = FontFace.from_bytes(bytes^)
+    var output = ShapeBuffer(capacity=8)
+    shape_into(face, "", TextStyle(), output)
+    assert_true(output.is_empty())
+    assert_true(output.capacity() >= 8)
+    output.validate_against_source("")
+
+
+def test_shape_into_reuses_output_without_gsub_and_clears_on_error() raises:
+    var face = _test_face()
+    var output = ShapeBuffer(capacity=16)
+    shape_into(
+        face,
+        "A日本語𠀀",
+        TextStyle().with_language(Language.ZH_HANT).with_script(Script.HAN),
+        output,
+    )
+    var retained_capacity = output.capacity()
+    assert_true(len(output) == 5)
+    assert_true(output.script() == Script.HAN)
+    assert_true(output.language() == Language.ZH_HANT)
+
+    shape_into(face, "A", TextStyle().with_script(Script.DEFAULT), output)
+    assert_true(len(output) == 1)
+    assert_true(output.capacity() == retained_capacity)
+    assert_true(output.script() == Script.DEFAULT)
+
+    with assert_raises(contains="total horizontal advance"):
+        shape_into(
+            face,
+            "AA",
+            TextStyle().with_size(Float64.MAX_FINITE),
+            output,
+        )
+    assert_true(output.is_empty())
+    assert_true(output.capacity() == retained_capacity)
+
+    shape_into(face, "A", TextStyle(), output)
+    with assert_raises(contains="only horizontal left-to-right"):
+        shape_into(
+            face,
+            "A",
+            TextStyle().with_direction(Direction.RIGHT_TO_LEFT),
+            output,
+        )
+    assert_true(output.is_empty())
+    assert_true(output.capacity() == retained_capacity)
 
 
 def test_shape_nominal_handles_empty_and_missing_text() raises:
@@ -300,6 +555,35 @@ def test_shape_nominal_into_reuses_all_output_capacity() raises:
     output.validate_against_source("")
 
 
+def test_shape_nominal_into_clears_stale_output_on_preflight_error() raises:
+    var face = _test_face()
+    var output = ShapeBuffer(capacity=8)
+    shape_nominal_into(face, "日本", TextStyle(), output)
+    var retained_capacity = output.capacity()
+
+    with assert_raises(contains="only horizontal left-to-right"):
+        shape_nominal_into(
+            face,
+            "A",
+            TextStyle().with_direction(Direction.RIGHT_TO_LEFT),
+            output,
+        )
+    assert_true(output.is_empty())
+    assert_true(output.capacity() == retained_capacity)
+
+    shape_nominal_into(face, "A", TextStyle(), output)
+    face._ascender = 32767
+    with assert_raises(contains="text size overflows scaled ascender"):
+        shape_nominal_into(
+            face,
+            "A",
+            TextStyle().with_size(Float64.MAX_FINITE),
+            output,
+        )
+    assert_true(output.is_empty())
+    assert_true(output.capacity() == retained_capacity)
+
+
 def test_shaping_rejects_scaled_metric_and_total_advance_overflow() raises:
     var bad_metrics_face = _test_face()
     bad_metrics_face._ascender = 32767
@@ -362,6 +646,11 @@ def test_glyph_run_validation_catches_parallel_array_and_cluster_corruption() ra
     bad_cluster._buffer._cluster_starts[1] = -1
     with assert_raises(contains="invalid source byte cluster"):
         bad_cluster.validate()
+
+    var bad_script = shape_nominal(face, "日本", TextStyle())
+    bad_script._buffer._script = Script(_value=0)
+    with assert_raises(contains="invalid Kumihan script tag"):
+        bad_script.validate()
 
 
 def test_source_validation_detects_utf8_interior_cluster_boundaries() raises:

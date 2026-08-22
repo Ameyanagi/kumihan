@@ -70,3 +70,35 @@ to the allocating API. The profile does not justify SIMD in nominal shaping:
 the work is dominated by scalar UTF-8 traversal, branch-heavy cmap lookup, and
 seven parallel appends. Retained storage is the appropriate optimization at
 this stage.
+
+## Ideographic variation sequences
+
+The format 14 extension adds a third profiling mode:
+
+```sh
+xcrun xctrace record \
+  --template 'Time Profiler' \
+  --output "$kumihan_profile_dir/time-ivs-reuse.trace" \
+  --no-prompt \
+  --launch -- "$PWD/.pixi/bench-core" --profile-ivs-reuse
+```
+
+It shapes 2,048 two-scalar IVSes 8,192 times, or 33,554,432 input scalar
+operations, into one retained `ShapeBuffer`. The expected output is capacity
+`2048` and checksum `356637355`.
+
+The 2026-08-22 Apple M4 recording contained 1,601 Time Profiler samples.
+Top-of-stack aggregation placed 1,589/1,601 samples (99.3%) in
+`shape_nominal_into`, `variation_glyph_id`, format-12 lookup, or their bounded
+16/24/32-bit reads. Only 29 samples (1.8%) landed directly in
+`variation_glyph_id` and 38 (2.4%) in its 24-bit reads; the enclosing scalar
+decode, cluster update, and seven parallel appends remained the dominant
+combined frame.
+
+No production optimization was applied from this profile. Selector lookup and
+default/explicit dispatch are serialized, branch-heavy binary searches over
+variable-sized font records; they are not a safe SIMD target. A special cache
+for one repeated selector would add state and can regress mixed-selector text,
+while the profile attributes too little exclusive time to justify it. Revisit
+only with real CJK fonts containing larger format 14 tables and a matching
+correctness oracle.

@@ -1,6 +1,6 @@
 """Safe, cached SFNT/TTC font-face parsing and horizontal metrics."""
 
-from std.collections import List
+from std.collections import List, Optional
 from std.memory import ArcPointer
 
 from .binary import _i16, _require_range, _scaled_size, _u16, _u16_unchecked, _u32
@@ -259,6 +259,18 @@ struct FontFace(Movable):
     def glyph_id(self, codepoint: Int) -> Int:
         """Return the mapped glyph ID, or ``0`` for an unmapped scalar."""
         return self._cmap.glyph_id(self._data[], codepoint)
+
+    def variation_glyph_id(
+        self, codepoint: Int, variation_selector: Int
+    ) -> Optional[Int]:
+        """Return a supported variation glyph, or ``None`` when unsupported.
+
+        Default UVSes resolve through the primary Unicode cmap; non-default
+        UVSes return their explicit format 14 glyph ID.
+        """
+        return self._cmap.variation_glyph_id(
+            self._data[], codepoint, variation_selector
+        )
 
     def advance_width(self, glyph_id: Int) -> Int:
         """Return a glyph's horizontal advance, or ``0`` for an invalid ID."""

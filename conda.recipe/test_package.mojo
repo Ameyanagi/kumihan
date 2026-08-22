@@ -30,27 +30,54 @@ def _write_u32(mut data: List[UInt8], offset: Int, value: Int):
     data[offset + 3] = UInt8(value & 0xFF)
 
 
+def _write_u24(mut data: List[UInt8], offset: Int, value: Int):
+    data[offset] = UInt8((value >> 16) & 0xFF)
+    data[offset + 1] = UInt8((value >> 8) & 0xFF)
+    data[offset + 2] = UInt8(value & 0xFF)
+
+
 def _make_cmap12() -> List[UInt8]:
     comptime group_count = 2
     comptime subtable_length = 16 + 12 * group_count
-    var data = List[UInt8](length=12 + subtable_length, fill=UInt8(0))
+    comptime cmap_header_length = 20
+    comptime format14_length = 30
+    var data = List[UInt8](
+        length=cmap_header_length + subtable_length + format14_length,
+        fill=UInt8(0),
+    )
     _write_u16(data, 0, 0)
-    _write_u16(data, 2, 1)
-    _write_u16(data, 4, 3)
-    _write_u16(data, 6, 10)
-    _write_u32(data, 8, 12)
-    _write_u16(data, 12, 12)
-    _write_u16(data, 14, 0)
-    _write_u32(data, 16, subtable_length)
-    _write_u32(data, 20, 0)
-    _write_u32(data, 24, group_count)
+    _write_u16(data, 2, 2)
+    _write_u16(data, 4, 0)
+    _write_u16(data, 6, 5)
+    _write_u32(data, 8, cmap_header_length + subtable_length)
+    _write_u16(data, 12, 3)
+    _write_u16(data, 14, 10)
+    _write_u32(data, 16, cmap_header_length)
 
-    _write_u32(data, 28, 0x41)
-    _write_u32(data, 32, 0x41)
-    _write_u32(data, 36, 1)
-    _write_u32(data, 40, 0x65E5)
-    _write_u32(data, 44, 0x65E5)
-    _write_u32(data, 48, 2)
+    var format12 = cmap_header_length
+    _write_u16(data, format12, 12)
+    _write_u16(data, format12 + 2, 0)
+    _write_u32(data, format12 + 4, subtable_length)
+    _write_u32(data, format12 + 8, 0)
+    _write_u32(data, format12 + 12, group_count)
+
+    _write_u32(data, format12 + 16, 0x41)
+    _write_u32(data, format12 + 20, 0x41)
+    _write_u32(data, format12 + 24, 1)
+    _write_u32(data, format12 + 28, 0x65E5)
+    _write_u32(data, format12 + 32, 0x65E5)
+    _write_u32(data, format12 + 36, 2)
+
+    var format14 = cmap_header_length + subtable_length
+    _write_u16(data, format14, 14)
+    _write_u32(data, format14 + 2, format14_length)
+    _write_u32(data, format14 + 6, 1)
+    _write_u24(data, format14 + 10, 0xE0100)
+    _write_u32(data, format14 + 13, 0)
+    _write_u32(data, format14 + 17, 21)
+    _write_u32(data, format14 + 21, 1)
+    _write_u24(data, format14 + 25, 0x65E5)
+    _write_u16(data, format14 + 28, 1)
     return data^
 
 
@@ -120,6 +147,9 @@ def main() raises:
     var face: FontFace = collection.face()
     assert_equal(face.glyph_id(ord("A")), 1)
     assert_equal(face.glyph_id(ord("日")), 2)
+    var variation = face.variation_glyph_id(ord("日"), 0xE0100)
+    assert_true(variation)
+    assert_equal(variation.value(), 1)
 
     var style = (
         TextStyle()
@@ -150,3 +180,13 @@ def main() raises:
     assert_equal(output.cluster_ends()[1], 4)
     assert_true(output.total_x_advance() == 32.0)
     output.validate_against_source("日A")
+
+    var ivs = String("日")
+    ivs += chr(0xE0100)
+    shape_nominal_into(face, ivs, style, output)
+    assert_equal(len(output), 1)
+    assert_equal(output.glyph_ids()[0], 1)
+    assert_equal(output.cluster_starts()[0], 0)
+    assert_equal(output.cluster_ends()[0], ivs.byte_length())
+    assert_true(output.total_x_advance() == 12.0)
+    output.validate_against_source(ivs)

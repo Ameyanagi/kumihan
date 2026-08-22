@@ -367,6 +367,16 @@ def _scaled_metric(value: Int, scale: Float64, name: StringSlice) raises -> Floa
     return result
 
 
+def _is_variation_selector(value: Int) -> Bool:
+    """Return whether ``value`` is a Unicode variation selector."""
+    return (
+        (value >= 0x180B and value <= 0x180D)
+        or value == 0x180F
+        or (value >= 0xFE00 and value <= 0xFE0F)
+        or (value >= 0xE0100 and value <= 0xE01EF)
+    )
+
+
 def shape_nominal_into(
     face: FontFace,
     text: StringSlice,
@@ -375,13 +385,17 @@ def shape_nominal_into(
 ) raises:
     """Map horizontal LTR text into caller-owned reusable output.
 
-    The source is decoded exactly once.  Every scalar produces one glyph and
-    one exact UTF-8 byte range.  ``output`` retains allocations across calls.
-    If an advance or running total overflows, output is cleared before raising.
+    The source is decoded exactly once.  Ordinary scalars produce one glyph.
+    A variation selector extends the immediately preceding scalar's cluster
+    and selects its supported default or non-default cmap glyph; unsupported
+    pairs retain the base glyph.  Leading selectors are ignored; further
+    consecutive selectors do not reselect the glyph but remain covered by its
+    cluster. ``output`` retains allocations across calls. If an advance or
+    running total overflows, output is cleared before raising.
 
     This intentionally is not full OpenType shaping: GSUB, GPOS, bidi,
-    normalization, fallback, variation selection, and vertical layout are not
-    implemented by this function.
+    normalization, fallback, and vertical layout are not implemented by this
+    function.
     """
     style.validate()
     if not style.direction().is_left_to_right():
@@ -404,12 +418,52 @@ def shape_nominal_into(
     var byte_offset = 0
     var total_x_advance = 0.0
     var missing_glyph_count = 0
+    var previous_is_base = False
+    var previous_has_glyph = False
+    var previous_base = 0
+    var total_before_previous = 0.0
 
     # Do not split this into a counting pass and a mapping pass: codepoint
     # decoding is intentionally paid exactly once per source scalar.
     for scalar in text.codepoints():
         var cluster_end = byte_offset + scalar.utf8_byte_length()
-        var glyph_id = face.glyph_id(Int(scalar.to_u32()))
+        var scalar_value = Int(scalar.to_u32())
+        if _is_variation_selector(scalar_value):
+            if previous_is_base:
+                var previous_index = len(output._glyph_ids) - 1
+                var glyph_id = output._glyph_ids[previous_index]
+                var variation = face.variation_glyph_id(previous_base, scalar_value)
+                if variation:
+                    glyph_id = variation.value()
+                if glyph_id != output._glyph_ids[previous_index]:
+                    var x_advance = Float64(face.advance_width(glyph_id)) * scale
+                    if not isfinite(x_advance):
+                        output.clear()
+                        raise Error("text size overflows scaled glyph advance")
+                    if x_advance > Float64.MAX_FINITE - total_before_previous:
+                        output.clear()
+                        raise Error(
+                            "text size overflows the run's total horizontal advance"
+                        )
+                    var previous_glyph = output._glyph_ids[previous_index]
+                    if previous_glyph == 0 and glyph_id != 0:
+                        missing_glyph_count -= 1
+                    elif previous_glyph != 0 and glyph_id == 0:
+                        missing_glyph_count += 1
+                    output._glyph_ids[previous_index] = glyph_id
+                    output._x_advances[previous_index] = x_advance
+                    total_x_advance = total_before_previous + x_advance
+            if previous_has_glyph:
+                # Only the first selector chooses a glyph, but UAX #29 GB9
+                # keeps every trailing selector in that glyph's source cluster.
+                output._cluster_ends[len(output._cluster_ends) - 1] = cluster_end
+            # A selector can select only for the immediately preceding
+            # non-selector scalar. Stacked selectors remain default-ignorable.
+            previous_is_base = False
+            byte_offset = cluster_end
+            continue
+
+        var glyph_id = face.glyph_id(scalar_value)
         var x_advance = Float64(face.advance_width(glyph_id)) * scale
         if not isfinite(x_advance):
             output.clear()
@@ -417,6 +471,7 @@ def shape_nominal_into(
         if x_advance > Float64.MAX_FINITE - total_x_advance:
             output.clear()
             raise Error("text size overflows the run's total horizontal advance")
+        total_before_previous = total_x_advance
         output._glyph_ids.append(glyph_id)
         output._cluster_starts.append(byte_offset)
         output._cluster_ends.append(cluster_end)
@@ -427,6 +482,9 @@ def shape_nominal_into(
         total_x_advance += x_advance
         if glyph_id == 0:
             missing_glyph_count += 1
+        previous_is_base = True
+        previous_has_glyph = True
+        previous_base = scalar_value
         byte_offset = cluster_end
 
     output._source_byte_length = text.byte_length()

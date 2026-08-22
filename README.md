@@ -7,10 +7,11 @@ Mojo.
 
 Kumihan is the font and shaping layer for the Mojo graphics ecosystem. It is
 designed for complete CJK typography without making a plotting or rendering
-library own a second font stack. The first release deliberately starts below
+library own a second font stack. Kumihan deliberately starts below
 complex shaping: it validates SFNT and TrueType Collection structure, reads
 global and horizontal metrics, maps Unicode scalars through `cmap` formats 4
-and 12, and produces nominal horizontal glyph runs.
+and 12, resolves font-declared Unicode variation sequences through `cmap`
+format 14, and produces nominal horizontal glyph runs.
 
 ## Install
 
@@ -54,22 +55,27 @@ def main() raises:
 root surface. Font parsing, validated style modifiers, and nominal shaping are
 fallible; default construction and inspection are ordinary value operations.
 
-## What 0.1.0 does
+## Current foundation
 
 - Validate bounded SFNT and TTC table directories before exposing a face.
 - Share one reference-counted backing allocation across faces from a TTC/OTC.
 - Read the metrics needed for nominal horizontal placement.
 - Select and query Unicode `cmap` format 4 and 12 subtables.
+- Validate `cmap` format 14 and resolve default or explicit variation glyphs
+  with `FontFace.variation_glyph_id(base, selector)`.
 - Map Unicode scalars to nominal glyph IDs and horizontal advances.
+- Consume a supported or unsupported base-plus-variation-selector pair as one
+  UTF-8 source cluster during nominal shaping.
 - Retain explicit direction, language, style, cluster, and glyph-run contracts
   that later shaping can extend without changing renderer APIs.
 - Parse a font face once and reuse sorted-table lookup state across text runs.
 
-This is not yet a complete CJK text engine. Version 0.1.0 does **not** implement
-GSUB/GPOS shaping, Unicode variation sequences (`cmap` format 14), glyph
-outlines, system-font discovery or locale-aware fallback, bidirectional layout,
-CJK line breaking, vertical layout, or rasterization. These are roadmap work,
-not hidden best-effort behavior. See [scope and roadmap](docs/scope.md).
+This is not yet a complete CJK text engine. Kumihan does **not** yet implement
+GSUB/GPOS shaping, a bundled registry of sanctioned Unicode variation
+sequences, glyph outlines, system-font discovery or locale-aware fallback,
+bidirectional layout, CJK line breaking, vertical layout, or rasterization.
+These are roadmap work, not hidden best-effort behavior. See
+[scope and roadmap](docs/scope.md).
 
 ## Ecosystem boundary
 

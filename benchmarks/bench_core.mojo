@@ -15,16 +15,23 @@ from std.collections import List
 from std.sys import argv
 from std.time import perf_counter_ns
 
-from support.font_fixture import make_test_collection, make_test_font
+from support.font_fixture import (
+    make_test_collection,
+    make_test_font,
+    make_test_uvs_font,
+)
 
 
 comptime _MEASUREMENTS = 31
 comptime _WARMUP_ROUNDS = 3
 comptime _LOOKUP_SAMPLE_BUDGET = 1 << 20
+comptime _VARIATION_QUERY_COUNT = 1 << 16
+comptime _VARIATION_SAMPLE_BUDGET = 1 << 20
 comptime _SHAPE_SAMPLE_BUDGET = 1 << 16
 comptime _CONSTRUCTION_OPERATIONS = 4096
 comptime _PROFILE_SCALARS = 4096
 comptime _PROFILE_ITERATIONS = 8192
+comptime _PROFILE_IVS_SEQUENCES = 2048
 
 
 def _sort(mut values: List[Int]):
@@ -100,11 +107,76 @@ def _mixed_text(scalar_count: Int) -> String:
     return text^
 
 
+def _ivs_text(sequence_count: Int) -> String:
+    """Build equal supported-default, explicit, and unsupported CJK IVSes."""
+    var text = String()
+    for index in range(sequence_count):
+        var position = index % 3
+        if position == 0:
+            text += "日"  # Supported default mapping to nominal glyph 2.
+        elif position == 1:
+            text += "本"  # Supported explicit mapping to glyph 5.
+        else:
+            text += "語"  # Unsupported UVS; preserve nominal glyph 4.
+        text += chr(0xE0100)
+    return text^
+
+
 def _lookup_checksum(face: FontFace, codepoints: List[Int]) -> Int:
     var checksum = 0
     for index in range(len(codepoints)):
         # Include the position as well as the mapped glyph to catch reordering.
         checksum += (index + 1) * (face.glyph_id(codepoints[index]) + 1)
+    return checksum
+
+
+def _variation_codepoints(category: Int, count: Int) -> List[Int]:
+    var values = List[Int](capacity=count)
+    for index in range(count):
+        var position = index % 3
+        if category == 0:
+            # All are supported default UVSes; U+4E00 deliberately maps to
+            # glyph zero and proves Optional presence remains observable.
+            values.append(0x65E5 if position != 2 else 0x4E00)
+        elif category == 1:
+            if position == 0:
+                values.append(0x672C)
+            elif position == 1:
+                values.append(0x9AA8)
+            else:
+                values.append(0x65E5)
+        else:
+            if position == 0:
+                values.append(0x8A9E)
+            elif position == 1:
+                values.append(0x65E5)
+            else:
+                values.append(0x41)
+    return values^
+
+
+def _variation_selectors(category: Int, count: Int) -> List[Int]:
+    var values = List[Int](capacity=count)
+    for index in range(count):
+        var position = index % 3
+        if category == 0:
+            values.append(0xE0102 if position == 1 else 0xE0100)
+        elif category == 1:
+            values.append(0xE0101 if position == 2 else 0xE0100)
+        else:
+            values.append(0xE0103 if position == 1 else 0xE0100)
+    return values^
+
+
+def _variation_checksum(
+    face: FontFace, codepoints: List[Int], selectors: List[Int]
+) -> Int:
+    var checksum = 0
+    for index in range(len(codepoints)):
+        var glyph = face.variation_glyph_id(codepoints[index], selectors[index])
+        if glyph:
+            # Adding one distinguishes a supported glyph-zero UVS from None.
+            checksum += (index + 1) * (glyph.value() + 1)
     return checksum
 
 
@@ -317,6 +389,60 @@ def _measure_lookup(face: FontFace, count: Int) raises:
     )
 
 
+def _measure_variation_lookup(face: FontFace, category: Int, identity: String) raises:
+    var codepoints = _variation_codepoints(category, _VARIATION_QUERY_COUNT)
+    var selectors = _variation_selectors(category, _VARIATION_QUERY_COUNT)
+    var iterations = _VARIATION_SAMPLE_BUDGET // _VARIATION_QUERY_COUNT
+    var expected = _variation_checksum(face, codepoints, selectors)
+
+    for _ in range(_WARMUP_ROUNDS):
+        var checksum = 0
+        for _ in range(iterations):
+            checksum += _variation_checksum(face, codepoints, selectors)
+        keep(checksum)
+        if checksum != expected * iterations:
+            raise Error("cmap14 variation checksum changed during warmup")
+
+    var elapsed = List[Int](capacity=_MEASUREMENTS)
+    var measured_checksum = 0
+    for _ in range(_MEASUREMENTS):
+        var checksum = 0
+        var started = perf_counter_ns()
+        for _ in range(iterations):
+            checksum += _variation_checksum(face, codepoints, selectors)
+        elapsed.append(perf_counter_ns() - started)
+        keep(checksum)
+        if checksum != expected * iterations:
+            raise Error("cmap14 variation checksum changed")
+        measured_checksum = checksum
+
+    var percentiles = _percentiles(elapsed)
+    var operations = _VARIATION_QUERY_COUNT * iterations
+    print(
+        "case=cached_cmap14_",
+        identity,
+        " queries=",
+        _VARIATION_QUERY_COUNT,
+        " iterations=",
+        iterations,
+        " variation_operations=",
+        operations,
+        " p50_elapsed_ns=",
+        percentiles[0],
+        " p95_elapsed_ns=",
+        percentiles[1],
+        " p50_ns_per_variation=",
+        Float64(percentiles[0]) / Float64(operations),
+        " p95_ns_per_variation=",
+        Float64(percentiles[1]) / Float64(operations),
+        " p50_million_variations_per_second=",
+        Float64(operations) * 1000.0 / Float64(percentiles[0]),
+        " checksum=",
+        measured_checksum,
+        sep="",
+    )
+
+
 def _measure_shape_paths(face: FontFace, scalar_count: Int) raises:
     var text = _mixed_text(scalar_count)
     var style = TextStyle().with_size(16.0).with_language(Language.JA)
@@ -426,6 +552,72 @@ def _measure_shape_paths(face: FontFace, scalar_count: Int) raises:
     )
 
 
+def _measure_ivs_shape_reuse(face: FontFace, sequence_count: Int) raises:
+    var text = _ivs_text(sequence_count)
+    var style = TextStyle().with_size(16.0).with_language(Language.JA)
+    var input_scalars = 2 * sequence_count
+    var iterations = max(1, _SHAPE_SAMPLE_BUDGET // input_scalars)
+    var buffer = ShapeBuffer(capacity=sequence_count)
+    shape_nominal_into(face, text, style, buffer)
+    var expected = _shape_buffer_checksum(buffer)
+    if len(buffer) != sequence_count:
+        raise Error("IVS benchmark must emit one glyph per variation sequence")
+
+    for _ in range(_WARMUP_ROUNDS):
+        for _ in range(iterations):
+            shape_nominal_into(face, text, style, buffer)
+            keep(buffer)
+        if _shape_buffer_checksum(buffer) != expected:
+            raise Error("IVS shaping checksum changed during warmup")
+
+    var elapsed = List[Int](capacity=_MEASUREMENTS)
+    for _ in range(_MEASUREMENTS):
+        var started = perf_counter_ns()
+        for _ in range(iterations):
+            shape_nominal_into(face, text, style, buffer)
+            keep(buffer)
+        elapsed.append(perf_counter_ns() - started)
+        if _shape_buffer_checksum(buffer) != expected:
+            raise Error("IVS shaping checksum changed")
+
+    var percentiles = _percentiles(elapsed)
+    var scalar_operations = input_scalars * iterations
+    var sequence_operations = sequence_count * iterations
+    print(
+        "case=shape_nominal_into_reuse_ivs_mixed sequences=",
+        sequence_count,
+        " input_scalars=",
+        input_scalars,
+        " output_glyphs=",
+        len(buffer),
+        " utf8_bytes=",
+        text.byte_length(),
+        " iterations=",
+        iterations,
+        " scalar_operations=",
+        scalar_operations,
+        " sequence_operations=",
+        sequence_operations,
+        " retained_capacity=",
+        buffer.capacity(),
+        " p50_elapsed_ns=",
+        percentiles[0],
+        " p95_elapsed_ns=",
+        percentiles[1],
+        " p50_ns_per_input_scalar=",
+        Float64(percentiles[0]) / Float64(scalar_operations),
+        " p95_ns_per_input_scalar=",
+        Float64(percentiles[1]) / Float64(scalar_operations),
+        " p50_ns_per_sequence=",
+        Float64(percentiles[0]) / Float64(sequence_operations),
+        " p50_million_sequences_per_second=",
+        Float64(sequence_operations) * 1000.0 / Float64(percentiles[0]),
+        " checksum=",
+        expected,
+        sep="",
+    )
+
+
 def _profile_allocating(face: FontFace) raises:
     var text = _mixed_text(_PROFILE_SCALARS)
     var style = TextStyle().with_size(16.0).with_language(Language.JA)
@@ -475,6 +667,34 @@ def _profile_reuse(face: FontFace) raises:
     )
 
 
+def _profile_ivs_reuse(face: FontFace) raises:
+    var text = _ivs_text(_PROFILE_IVS_SEQUENCES)
+    var style = TextStyle().with_size(16.0).with_language(Language.JA)
+    var buffer = ShapeBuffer(capacity=_PROFILE_IVS_SEQUENCES)
+    shape_nominal_into(face, text, style, buffer)
+    var expected = _shape_buffer_checksum(buffer)
+    for _ in range(_PROFILE_ITERATIONS):
+        shape_nominal_into(face, text, style, buffer)
+        keep(buffer)
+    if _shape_buffer_checksum(buffer) != expected:
+        raise Error("IVS reusable profile checksum changed")
+    print(
+        "profile=shape_nominal_into_reuse_ivs sequence_count=",
+        _PROFILE_IVS_SEQUENCES,
+        " input_scalars=",
+        2 * _PROFILE_IVS_SEQUENCES,
+        " iterations=",
+        _PROFILE_ITERATIONS,
+        " scalar_operations=",
+        2 * _PROFILE_IVS_SEQUENCES * _PROFILE_ITERATIONS,
+        " retained_capacity=",
+        buffer.capacity(),
+        " checksum=",
+        expected,
+        sep="",
+    )
+
+
 def main() raises:
     # Parse reusable hot-path fixtures exactly once before their timing regions.
     var font_bytes = make_test_font()
@@ -488,12 +708,17 @@ def main() raises:
         if mode == "--profile-reuse":
             _profile_reuse(face)
             return
+        if mode == "--profile-ivs-reuse":
+            var uvs_profile_bytes = make_test_uvs_font()
+            var uvs_profile_face = FontFace.from_bytes(uvs_profile_bytes^)
+            _profile_ivs_reuse(uvs_profile_face)
+            return
         raise Error("unknown benchmark mode: ", mode)
     print(
-        "schema=kumihan-core-benchmark-v3 mojo=1.0.0 ",
+        "schema=kumihan-core-benchmark-v4 mojo=1.0.0 ",
         "build=mojo-build-O3 measurements=31 warmup_rounds=3 ",
         "statistic=nearest-rank-p50-p95 scope=synthetic-foundation ",
-        "fixture=tests/support/font_fixture.make_test_font-format12",
+        "fixtures=test-font-format12,test-uvs-font-format12-plus-format14",
         sep="",
     )
     var construction_template = make_test_font()
@@ -503,5 +728,12 @@ def main() raises:
     _measure_ttc_shared_faces(collection^)
     for count in [1024, 65536, 1048576]:
         _measure_lookup(face, count)
+    var uvs_bytes = make_test_uvs_font()
+    var uvs_face = FontFace.from_bytes(uvs_bytes^)
+    _measure_variation_lookup(uvs_face, 0, "supported_default")
+    _measure_variation_lookup(uvs_face, 1, "supported_explicit")
+    _measure_variation_lookup(uvs_face, 2, "unsupported")
     for scalar_count in [256, 4096, 65536]:
         _measure_shape_paths(face, scalar_count)
+    for sequence_count in [128, 2048, 32768]:
+        _measure_ivs_shape_reuse(uvs_face, sequence_count)

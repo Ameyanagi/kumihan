@@ -222,11 +222,10 @@ resolution followed by ordered scalar table execution.
 
 ## Final feature-offset scratch rerun
 
-Provenance: the source was the final uncommitted feature-offset scratch/dedup
-working tree derived from
-`be09c36a31a5bc6c612df999d7f79bbdf735dcd3`. The forthcoming feature commit SHA
-was **PENDING (not yet created)** when this profile was recorded; replace this
-placeholder only after that commit exists.
+Provenance: the recorded source became feature commit
+`021f304d33a3dc0d53da097089551f4255f083c8`, derived from
+`be09c36a31a5bc6c612df999d7f79bbdf735dcd3`. The only later change was this
+provenance note.
 
 The unchanged v5 harness was rebuilt with stable Mojo 1.0.0 and O3. A clean
 repeat produced:

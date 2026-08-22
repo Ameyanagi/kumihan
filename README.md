@@ -15,11 +15,11 @@ FeatureVariations are bounded safely but use the default Feature tables.
 
 ## Install
 
-Kumihan has not yet been published to the hosted Mojo channel. Work from a
-source checkout with [Pixi](https://pixi.sh/):
+Kumihan v0.1.0 is published as a GitHub source release, but not yet to the
+hosted Mojo channel. Work from the tagged source with [Pixi](https://pixi.sh/):
 
 ```sh
-git clone https://github.com/Ameyanagi/kumihan.git
+git clone --branch v0.1.0 --depth 1 https://github.com/Ameyanagi/kumihan.git
 cd kumihan
 pixi install --locked
 pixi run check

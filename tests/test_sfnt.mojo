@@ -1,7 +1,7 @@
 from std.collections import List
-from std.testing import TestSuite, assert_equal, assert_raises
+from std.testing import TestSuite, assert_equal, assert_false, assert_raises
 
-from kumihan.sfnt import FontCollection, FontFace, _parse_directory
+from kumihan.sfnt import FontCollection, FontFace, _find_table, _parse_directory
 from support.font_fixture import (
     make_bad_format4_range_lower_bound_font,
     make_bad_format4_reserved_pad_font,
@@ -85,6 +85,27 @@ def test_shared_face_outlives_collection_value() raises:
     assert_equal(face.glyph_id(0x20000), 5)
 
 
+def test_absent_optional_gsub_is_a_no_op() raises:
+    var bytes = make_test_font()
+    var face = FontFace.from_bytes(bytes^)
+    var glyph_ids = List[Int]()
+    glyph_ids.append(1)
+    glyph_ids.append(2)
+    glyph_ids.append(3)
+    assert_equal(
+        face._apply_locl(
+            glyph_ids,
+            0x68616E69,  # hani
+            0x4A414E20,  # JAN
+        ),
+        False,
+    )
+    assert_equal(len(glyph_ids), 3)
+    assert_equal(glyph_ids[0], 1)
+    assert_equal(glyph_ids[1], 2)
+    assert_equal(glyph_ids[2], 3)
+
+
 def test_rejects_bad_face_indices_and_headers() raises:
     var single = make_test_font()
     with assert_raises(contains="face_index is out of range"):
@@ -161,6 +182,9 @@ def test_reverse_sorted_large_directory_has_bounded_sorting_work() raises:
     assert_equal(len(tables), table_count)
     assert_equal(tables[0].tag, 1)
     assert_equal(tables[table_count - 1].tag, table_count)
+    var middle = _find_table(tables, table_count // 2)
+    assert_equal(middle.value().tag, table_count // 2)
+    assert_false(_find_table(tables, table_count + 1))
 
 
 def main() raises:

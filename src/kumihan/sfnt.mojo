@@ -5,10 +5,12 @@ from std.memory import ArcPointer
 
 from .binary import _i16, _require_range, _scaled_size, _u16, _u16_unchecked, _u32
 from .cmap import Cmap, _parse_cmap
+from .gsub import Gsub, _parse_gsub
 
 
 comptime _TAG_TTCF = 0x74746366
 comptime _TAG_CMAP = 0x636D6170
+comptime _TAG_GSUB = 0x47535542
 comptime _TAG_HEAD = 0x68656164
 comptime _TAG_HHEA = 0x68686561
 comptime _TAG_HMTX = 0x686D7478
@@ -142,6 +144,21 @@ def _require_table(tables: List[TableRecord], tag: Int) raises -> TableRecord:
     return tables[low]
 
 
+def _find_table(tables: List[TableRecord], tag: Int) -> Optional[TableRecord]:
+    """Find an optional table in the sorted directory in O(log n) time."""
+    var low = 0
+    var high = len(tables)
+    while low < high:
+        var middle = low + (high - low) // 2
+        if tables[middle].tag < tag:
+            low = middle + 1
+        else:
+            high = middle
+    if low == len(tables) or tables[low].tag != tag:
+        return None
+    return tables[low]
+
+
 struct FontFace(Movable):
     """A validated font face sharing immutable bytes with its collection.
 
@@ -155,6 +172,7 @@ struct FontFace(Movable):
     var _data: ArcPointer[List[UInt8]]
     var _tables: List[TableRecord]
     var _cmap: Cmap
+    var _gsub: Gsub
     var _units_per_em: Int
     var _ascender: Int
     var _descender: Int
@@ -168,6 +186,7 @@ struct FontFace(Movable):
         var data: ArcPointer[List[UInt8]],
         var tables: List[TableRecord],
         cmap: Cmap,
+        gsub: Gsub,
         units_per_em: Int,
         ascender: Int,
         descender: Int,
@@ -179,6 +198,7 @@ struct FontFace(Movable):
         self._data = data^
         self._tables = tables^
         self._cmap = cmap
+        self._gsub = gsub
         self._units_per_em = units_per_em
         self._ascender = ascender
         self._descender = descender
@@ -243,10 +263,16 @@ struct FontFace(Movable):
         var cmap = _parse_cmap(
             data[], cmap_table.offset, cmap_table.length, glyph_count
         )
+        var gsub = Gsub.absent(glyph_count)
+        var gsub_table = _find_table(tables, _TAG_GSUB)
+        if gsub_table:
+            var record = gsub_table.value()
+            gsub = _parse_gsub(data[], record.offset, record.length, glyph_count)
         return Self(
             data^,
             tables^,
             cmap,
+            gsub,
             units_per_em,
             ascender,
             descender,
@@ -270,6 +296,33 @@ struct FontFace(Movable):
         """
         return self._cmap.variation_glyph_id(
             self._data[], codepoint, variation_selector
+        )
+
+    def _apply_locl(
+        self,
+        mut glyph_ids: List[Int],
+        script_tag: Int,
+        language_tag: Int,
+    ) raises -> Bool:
+        """Apply the parsed ``locl`` substitutions to glyph IDs in place."""
+        return self._gsub.apply_locl(self._data[], glyph_ids, script_tag, language_tag)
+
+    def _apply_locl_into(
+        self,
+        mut glyph_ids: List[Int],
+        script_tag: Int,
+        language_tag: Int,
+        mut lookup_mask: List[UInt8],
+        mut feature_offsets: List[Int],
+    ) raises -> Bool:
+        """Apply ``locl`` while retaining caller-owned selection scratch."""
+        return self._gsub.apply_locl_into(
+            self._data[],
+            glyph_ids,
+            script_tag,
+            language_tag,
+            lookup_mask,
+            feature_offsets,
         )
 
     def advance_width(self, glyph_id: Int) -> Int:

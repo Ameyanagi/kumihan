@@ -36,15 +36,43 @@ ignorable. This is structural, font-declared selection. Kumihan does not yet
 bundle the Unicode standardized-variation or Ideographic Variation Database
 registries, and format 14 alone does not provide contextual OpenType shaping.
 
+## Unreleased localized-form shaping
+
+The current additive slice validates the OpenType Layout common structures in
+GSUB 1.0 and the default-feature path of GSUB 1.1. FeatureVariations record
+metadata is bounded, but conditional alternate Feature tables are not evaluated.
+Horizontal required features plus `locl` execute when they use SingleSubst
+format 1 or 2. Coverage formats 1 and 2 and ExtensionSubst type 7 wrapping
+SingleSubst are supported. Lookup indices are deduplicated and applied in
+LookupList order; subtables retain first-match semantics. Substitution keeps
+source clusters unchanged and horizontal metrics come from the final glyph.
+
+`shape(...)` and `shape_into(...)` provide this behavior. `shape_nominal(...)`
+and `shape_nominal_into(...)` remain exact cmap-plus-hmtx reference paths.
+`TextStyle.with_script(...)` selects `DFLT`, `hani`, `kana`, `hang`, or `bopo`,
+and `with_language(...)` selects the corresponding default or CJK OpenType
+language system. A call describes one already-segmented script run; automatic
+UAX #24 itemization remains a later layer.
+
+This slice is deliberately horizontal. It does not expose vertical-only GSUB
+features such as `vert`, `vrt2`, `vrtr`, or `vkna`: correct vertical output also
+needs vertical metrics and origins, UAX #50 orientation, renderer-visible
+rotation metadata, and a defined feature policy. A required vertical feature is
+rejected before mutation. Selected lookup flags that depend on GDEF likewise
+fail transactionally; silently ignoring their filtering semantics would be
+incorrect.
+
 ## Full-CJK roadmap
 
 The following stages are ordered to preserve a small API and avoid coupling
 parsing to any one renderer.
 
-1. Parse the OpenType Layout common structures once, then implement GSUB and
-   GPOS lookup execution with script, language, feature, and lookup flags.
-2. Add CJK-relevant features and tests: `locl`, `ccmp`, `liga`, `kern`, `vert`,
-   `vrt2`, ruby-facing metrics, half/proportional widths, and vertical origins.
+1. Extend the validated Layout foundation beyond required/`locl` SingleSubst
+   with GDEF-aware filtering, contextual GSUB, GPOS, and reusable compiled
+   feature plans.
+2. Add remaining CJK-relevant features and tests: `ccmp`, `liga`, `kern`,
+   `vert`, `vrt2`, ruby-facing metrics, half/proportional widths, and vertical
+   origins.
 3. Add renderer-neutral TrueType `glyf` and CFF/CFF2 outlines, including
    variable-font coordinates.
 4. Add a platform-neutral font database and deterministic family/style

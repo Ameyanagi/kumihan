@@ -23,11 +23,18 @@ measure:
 - cached `cmap` format 12 lookups over deterministic ASCII and CJK hits and
   misses, including a supplementary-plane character;
 - cached `cmap` format 14 lookup distributions for supported default,
-  supported explicit, and unsupported variation sequences; and
+  supported explicit, and unsupported variation sequences;
 - both allocating `shape_nominal` and retained-capacity `shape_nominal_into`
   over identical deterministic mixed ASCII, Japanese, Han, Hangul, and
   supplementary-plane text, plus retained-capacity shaping of mixed supported
-  default, supported explicit, and unsupported ideographic variation sequences.
+  default, supported explicit, and unsupported ideographic variation sequences;
+- the nominal oracle, allocating `shape`, and retained-capacity `shape_into`
+  over all-hit synthetic SingleSubst format 1/Coverage format 1 and SingleSubst
+  format 2/Coverage format 2 tables, at short and long run lengths;
+- explicit CJK IVS resolution followed by `locl`, again comparing nominal,
+  allocating, and retained-buffer paths; and
+- an end-to-end selector scaling probe comparing one DFLT lookup with the
+  seven-lookup `hani`/`JAN` fixture through the public `shape_into` API.
 
 The construction cases perform 4,096 single-face constructions or 4,096 TTC
 face pairs per sample. Input fixture generation and SFNT byte copying are
@@ -40,17 +47,26 @@ sample. IVS shaping contains 128, 2,048, and 32,768 two-scalar sequences,
 normalized to 65,536 input scalar operations per sample. Each case performs
 three warmup rounds and then records 31 independent elapsed-time samples with
 `perf_counter_ns`. Reported p50 and p95 values use nearest rank (sorted indices
-15 and 29).
+15 and 29). The GSUB short and long runs contain 16 and 4,096 input scalars and
+are normalized to 32,768 input scalar operations per sample. The IVS-to-`locl`
+cases contain 8 and 2,048 two-scalar sequences. These fixtures deliberately
+exercise only the supported `locl` SingleSubst slice; they do not model full
+OpenType shaping or real CJK font-table distributions.
 
 Every sample is checked against a deterministic semantic checksum. Lookup
 checksums consume positions and glyph IDs. Shaping checksums consume glyph IDs,
 UTF-8 cluster starts and ends, advances, missing-glyph count, and source byte
 length. The allocating and reusable cases must produce the same checksum.
 Checksum validation is outside each shaping timed region, and measurement
-order alternates per sample to reduce order bias. The output also records
-UTF-8/input sizes, operation counts, nanoseconds per scalar, and throughput.
-Each construction boundary is separately labelled so parsing, fixture
-preparation, and cached hot paths are not conflated.
+order alternates or rotates per sample to reduce order bias. The output also
+records UTF-8/input sizes, operation counts, nanoseconds per scalar, and
+throughput. Each construction boundary is separately labelled so parsing,
+fixture preparation, and cached hot paths are not conflated.
+
+Kumihan does not currently expose a public shape-plan object or separate plan
+selection/execution calls. The benchmark therefore does not import private
+GSUB internals or claim to isolate planning. The one-versus-seven-lookup probe
+measures selector scaling indirectly through the supported public workflow.
 
 Results are distribution measurements, not universal performance claims. When
 publishing numbers, record the CPU, OS, machine load, `mojo --version`, commit,

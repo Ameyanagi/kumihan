@@ -1,24 +1,25 @@
-"""Renderer-neutral glyph runs and deliberately nominal horizontal shaping.
+"""Renderer-neutral glyph runs and horizontal CJK shaping.
 
 ``shape_nominal`` and ``shape_nominal_into`` perform one Unicode-scalar pass,
-cmap lookup, and hmtx scaling.  They do not yet apply OpenType GSUB or GPOS,
-normalize text, perform bidi reordering, choose fallback fonts, or provide
-vertical substitutions.  Callers that need full OpenType shaping must not
-treat these APIs as such.
+cmap lookup, and hmtx scaling. ``shape`` and ``shape_into`` additionally apply
+the selected OpenType required feature and ``locl`` substitutions. Script and
+language come from ``TextStyle``. None of these APIs yet apply GPOS, normalize
+text, perform bidi reordering, choose fallback fonts, or provide vertical
+substitutions.
 """
 
 from std.collections import List
 from std.math import isfinite
 
 from .sfnt import FontFace
-from .style import Direction, Language, TextStyle
+from .style import Direction, Language, Script, TextStyle
 
 
 struct ShapeBuffer(Movable, Sized):
     """Reusable structure-of-arrays storage for positioned glyph output.
 
-    ``shape_nominal_into`` clears logical lengths while retaining every list's
-    allocation.  One buffer may serve repeated sequential calls, but must not
+    Shaping into the buffer clears logical lengths while retaining every list's
+    allocation. One buffer may serve repeated sequential calls, but must not
     be aliased across concurrent calls.  Cluster ranges are byte offsets; call
     ``validate_against_source`` when their UTF-8 boundary relationship to a
     particular source must also be checked.
@@ -31,9 +32,12 @@ struct ShapeBuffer(Movable, Sized):
     var _y_advances: List[Float64]
     var _x_offsets: List[Float64]
     var _y_offsets: List[Float64]
+    var _gsub_lookup_mask: List[UInt8]
+    var _gsub_feature_offsets: List[Int]
     var _source_byte_length: Int
     var _font_size: Float64
     var _language: Language
+    var _script: Script
     var _direction: Direction
     var _ascender: Float64
     var _descender: Float64
@@ -50,9 +54,12 @@ struct ShapeBuffer(Movable, Sized):
         self._y_advances = List[Float64]()
         self._x_offsets = List[Float64]()
         self._y_offsets = List[Float64]()
+        self._gsub_lookup_mask = List[UInt8]()
+        self._gsub_feature_offsets = List[Int]()
         self._source_byte_length = 0
         self._font_size = 16.0
         self._language = Language.UND
+        self._script = Script.DEFAULT
         self._direction = Direction.LEFT_TO_RIGHT
         self._ascender = 0.0
         self._descender = 0.0
@@ -71,9 +78,12 @@ struct ShapeBuffer(Movable, Sized):
         self._y_advances = List[Float64](capacity=capacity)
         self._x_offsets = List[Float64](capacity=capacity)
         self._y_offsets = List[Float64](capacity=capacity)
+        self._gsub_lookup_mask = List[UInt8]()
+        self._gsub_feature_offsets = List[Int]()
         self._source_byte_length = 0
         self._font_size = 16.0
         self._language = Language.UND
+        self._script = Script.DEFAULT
         self._direction = Direction.LEFT_TO_RIGHT
         self._ascender = 0.0
         self._descender = 0.0
@@ -85,6 +95,7 @@ struct ShapeBuffer(Movable, Sized):
         self._source_byte_length = 0
         self._font_size = 16.0
         self._language = Language.UND
+        self._script = Script.DEFAULT
         self._direction = Direction.LEFT_TO_RIGHT
         self._ascender = 0.0
         self._descender = 0.0
@@ -101,6 +112,8 @@ struct ShapeBuffer(Movable, Sized):
         self._y_advances.clear()
         self._x_offsets.clear()
         self._y_offsets.clear()
+        self._gsub_lookup_mask.clear()
+        self._gsub_feature_offsets.clear()
         self._reset_metadata()
 
     def reserve(mut self, capacity: Int) raises:
@@ -177,6 +190,9 @@ struct ShapeBuffer(Movable, Sized):
     def language(self) -> Language:
         return self._language
 
+    def script(self) -> Script:
+        return self._script
+
     def direction(self) -> Direction:
         return self._direction
 
@@ -217,9 +233,10 @@ struct ShapeBuffer(Movable, Sized):
         if not isfinite(self._font_size) or self._font_size <= 0.0:
             raise Error("glyph-run font size must be finite and positive")
         self._language.validate()
+        self._script.validate()
         self._direction.validate()
         if not self._direction.is_left_to_right():
-            raise Error("nominal glyph runs currently require left-to-right direction")
+            raise Error("glyph runs currently require left-to-right direction")
         if (
             not isfinite(self._ascender)
             or not isfinite(self._descender)
@@ -284,8 +301,9 @@ struct GlyphRun(Movable, Sized):
     """Own one immutable-by-contract positioned run.
 
     The run wraps the same SoA representation as ``ShapeBuffer``.  The
-    allocating ``shape_nominal`` convenience API returns this ownership form;
-    repeated callers should inspect a retained ``ShapeBuffer`` instead.
+    allocating ``shape`` and ``shape_nominal`` convenience APIs return this
+    ownership form; repeated callers should inspect a retained ``ShapeBuffer``
+    instead.
     """
 
     var _buffer: ShapeBuffer
@@ -328,6 +346,9 @@ struct GlyphRun(Movable, Sized):
 
     def language(self) -> Language:
         return self._buffer.language()
+
+    def script(self) -> Script:
+        return self._buffer.script()
 
     def direction(self) -> Direction:
         return self._buffer.direction()
@@ -390,13 +411,14 @@ def shape_nominal_into(
     and selects its supported default or non-default cmap glyph; unsupported
     pairs retain the base glyph.  Leading selectors are ignored; further
     consecutive selectors do not reselect the glyph but remain covered by its
-    cluster. ``output`` retains allocations across calls. If an advance or
-    running total overflows, output is cleared before raising.
+    cluster. ``output`` retains allocations across calls. On any error, logical
+    output is cleared while its allocations remain reusable.
 
     This intentionally is not full OpenType shaping: GSUB, GPOS, bidi,
     normalization, fallback, and vertical layout are not implemented by this
     function.
     """
+    output.clear()
     style.validate()
     if not style.direction().is_left_to_right():
         raise Error(
@@ -413,7 +435,6 @@ def shape_nominal_into(
     var descender = _scaled_metric(face.descender(), scale, "descender")
     var line_gap = _scaled_metric(face.line_gap(), scale, "line gap")
 
-    output.clear()
     output.reserve(_initial_capacity(text.byte_length()))
     var byte_offset = 0
     var total_x_advance = 0.0
@@ -490,6 +511,7 @@ def shape_nominal_into(
     output._source_byte_length = text.byte_length()
     output._font_size = style.size()
     output._language = style.language()
+    output._script = style.script()
     output._direction = style.direction()
     output._ascender = ascender
     output._descender = descender
@@ -508,4 +530,70 @@ def shape_nominal(
     """
     var output = ShapeBuffer(capacity=_initial_capacity(text.byte_length()))
     shape_nominal_into(face, text, style, output)
+    return GlyphRun(_buffer=output^)
+
+
+def _recompute_horizontal_advances(
+    face: FontFace, style: TextStyle, mut output: ShapeBuffer
+) raises:
+    """Refresh hmtx-derived output after an in-place substitution."""
+    var scale = style.size() / Float64(face.units_per_em())
+    var total_x_advance = 0.0
+    var missing_glyph_count = 0
+    for index in range(len(output._glyph_ids)):
+        var glyph_id = output._glyph_ids[index]
+        var x_advance = Float64(face.advance_width(glyph_id)) * scale
+        if not isfinite(x_advance):
+            output.clear()
+            raise Error("text size overflows scaled glyph advance")
+        if x_advance > Float64.MAX_FINITE - total_x_advance:
+            output.clear()
+            raise Error("text size overflows the run's total horizontal advance")
+        output._x_advances[index] = x_advance
+        total_x_advance += x_advance
+        if glyph_id == 0:
+            missing_glyph_count += 1
+    output._total_x_advance = total_x_advance
+    output._missing_glyph_count = missing_glyph_count
+
+
+def shape_into(
+    face: FontFace,
+    text: StringSlice,
+    style: TextStyle,
+    mut output: ShapeBuffer,
+) raises:
+    """Shape horizontal LTR text into reusable output.
+
+    Nominal cmap/UVS mapping is followed by the selected OpenType required
+    feature and automatic ``locl`` substitution. Script and language come from
+    ``style``. Use ``shape_nominal_into`` when exact cmap+hmtx output is
+    required. On any failure, logical output is cleared while allocations
+    remain available for the next call.
+    """
+    var changed: Bool
+    try:
+        shape_nominal_into(face, text, style, output)
+        changed = face._apply_locl_into(
+            output._glyph_ids,
+            style.script()._open_type_tag(),
+            style.language()._open_type_tag(),
+            output._gsub_lookup_mask,
+            output._gsub_feature_offsets,
+        )
+        if changed:
+            _recompute_horizontal_advances(face, style, output)
+    except error:
+        output.clear()
+        raise error
+
+
+def shape(face: FontFace, text: StringSlice, style: TextStyle) raises -> GlyphRun:
+    """Allocate horizontal LTR output with required features and ``locl``.
+
+    Repeated or latency-sensitive callers should retain a ``ShapeBuffer`` and
+    call ``shape_into`` to reuse its output and GSUB-selection allocations.
+    """
+    var output = ShapeBuffer(capacity=_initial_capacity(text.byte_length()))
+    shape_into(face, text, style, output)
     return GlyphRun(_buffer=output^)

@@ -9,6 +9,16 @@ behavior, understand decomposition boundaries, and design independent tests.
 - [OpenType 1.9.1 `cmap`](https://learn.microsoft.com/en-us/typography/opentype/spec/cmap)
   defines the format 4, 12, and 14 structures and variation-sequence lookup
   semantics.
+- [OpenType Layout common formats 1.9.1](https://learn.microsoft.com/en-us/typography/opentype/spec/chapter2)
+  defines ScriptList, LangSys, FeatureList, LookupList, lookup flags, and
+  Coverage tables.
+- [OpenType GSUB 1.9.1](https://learn.microsoft.com/en-us/typography/opentype/spec/gsub)
+  defines lookup ordering, SingleSubst, and ExtensionSubst behavior.
+- [OpenType `locl`](https://learn.microsoft.com/en-us/typography/opentype/spec/features_ko#tag-locl)
+  defines localized-form selection and its language-system relationship.
+- [OpenType `vert` and `vrt2`](https://learn.microsoft.com/en-us/typography/opentype/spec/features_uz)
+  define the vertical substitution boundary that is intentionally not exposed
+  by the current horizontal run contract.
 - [Unicode 17.0, chapter 23](https://www.unicode.org/versions/Unicode17.0.0/core-spec/chapter-23/)
   and the [Unicode 17.0 `Variation_Selector` property](https://www.unicode.org/Public/17.0.0/ucd/PropList.txt)
   define the recognized selector code points.
@@ -17,6 +27,10 @@ behavior, understand decomposition boundaries, and design independent tests.
 - [UAX #29](https://www.unicode.org/reports/tr29/) defines the grapheme-cluster
   behavior used to preserve source coverage around default-ignorable variation
   selectors.
+- [UAX #24](https://www.unicode.org/reports/tr24/) defines the future automatic
+  script-itemization layer; current shaping accepts one explicit script run.
+- [UAX #50](https://www.unicode.org/reports/tr50/) defines vertical orientation
+  behavior required before vertical shaping can be exposed.
 
 ## Existing Mojo work
 

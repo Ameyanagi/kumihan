@@ -3,12 +3,28 @@ from kumihan.shape import GlyphRun, ShapeBuffer, shape_nominal, shape_nominal_in
 from kumihan.style import Direction, Language, TextStyle
 from std.testing import TestSuite, assert_equal, assert_raises, assert_true
 
-from support.font_fixture import make_glyph_advance_overflow_font, make_test_font
+from support.font_fixture import (
+    make_glyph_advance_overflow_font,
+    make_test_font,
+    make_test_uvs_explicit_glyph_zero_font,
+    make_test_uvs_font,
+)
 
 
 def _test_face() raises -> FontFace:
     var bytes = make_test_font()
     return FontFace.from_bytes(bytes^)
+
+
+def _uvs_face() raises -> FontFace:
+    var bytes = make_test_uvs_font()
+    return FontFace.from_bytes(bytes^)
+
+
+def _variation_sequence(base: StringSlice, selector: Int) -> String:
+    var result = String(base)
+    result += chr(selector)
+    return result^
 
 
 def test_nominal_language_tags_and_directions_are_explicit() raises:
@@ -111,6 +127,143 @@ def test_shape_nominal_handles_empty_and_missing_text() raises:
     assert_true(missing.missing_glyph_count() == 1)
     assert_true(missing.cluster_starts()[0] == 0)
     assert_true(missing.cluster_ends()[0] == 1)
+
+
+def test_shape_nominal_consumes_default_and_explicit_cjk_uvs() raises:
+    var face = _uvs_face()
+    var default_text = _variation_sequence("日", 0xE0100)
+    var default_run = shape_nominal(face, default_text, TextStyle())
+    assert_true(len(default_run) == 1)
+    assert_true(default_run.glyph_ids()[0] == 2)
+    assert_true(default_run.cluster_starts()[0] == 0)
+    assert_true(default_run.cluster_ends()[0] == 7)
+    assert_true(default_run.total_x_advance() == 16.0)
+    default_run.validate_against_source(default_text)
+
+    var explicit_text = _variation_sequence("本", 0xE0100)
+    var explicit_run = shape_nominal(face, explicit_text, TextStyle())
+    assert_true(len(explicit_run) == 1)
+    assert_true(explicit_run.glyph_ids()[0] == 5)
+    assert_true(explicit_run.cluster_ends()[0] == 7)
+    assert_true(explicit_run.missing_glyph_count() == 0)
+    explicit_run.validate_against_source(explicit_text)
+
+    var second_selector_text = _variation_sequence("日", 0xE0101)
+    var second_selector_run = shape_nominal(face, second_selector_text, TextStyle())
+    assert_true(second_selector_run.glyph_ids()[0] == 4)
+    second_selector_run.validate_against_source(second_selector_text)
+
+    # E0100 resolves 日 through the default UVS, while E0101 would explicitly
+    # select glyph 4. Only the first selector may choose the glyph; the second
+    # still extends the same source cluster under UAX #29 GB9.
+    var stacked_text = _variation_sequence("日", 0xE0100)
+    stacked_text += chr(0xE0101)
+    var stacked_run = shape_nominal(face, stacked_text, TextStyle())
+    assert_true(len(stacked_run) == 1)
+    assert_true(stacked_run.glyph_ids()[0] == 2)
+    assert_true(stacked_run.cluster_starts()[0] == 0)
+    assert_true(stacked_run.cluster_ends()[0] == 11)
+    stacked_run.validate_against_source(stacked_text)
+
+
+def test_shape_nominal_handles_sequence_only_and_glyph_zero_uvs() raises:
+    var face = _uvs_face()
+    var sequence_only_text = _variation_sequence("骨", 0xE0100)
+    var sequence_only = shape_nominal(face, sequence_only_text, TextStyle())
+    assert_true(len(sequence_only) == 1)
+    assert_true(sequence_only.glyph_ids()[0] == 4)
+    assert_true(sequence_only.cluster_starts()[0] == 0)
+    assert_true(sequence_only.cluster_ends()[0] == 7)
+    assert_true(sequence_only.missing_glyph_count() == 0)
+    assert_true(sequence_only.total_x_advance() == 16.0)
+    sequence_only.validate_against_source(sequence_only_text)
+
+    var explicit_zero_bytes = make_test_uvs_explicit_glyph_zero_font()
+    var explicit_zero_face = FontFace.from_bytes(explicit_zero_bytes^)
+    var explicit_zero_text = _variation_sequence("本", 0xE0100)
+    var explicit_zero = shape_nominal(
+        explicit_zero_face, explicit_zero_text, TextStyle()
+    )
+    assert_true(len(explicit_zero) == 1)
+    assert_true(explicit_zero.glyph_ids()[0] == 0)
+    assert_true(explicit_zero.cluster_ends()[0] == 7)
+    assert_true(explicit_zero.missing_glyph_count() == 1)
+    assert_true(explicit_zero.total_x_advance() == 8.0)
+    explicit_zero.validate_against_source(explicit_zero_text)
+
+
+def test_shape_nominal_falls_back_to_base_for_unsupported_uvs() raises:
+    var face = _uvs_face()
+    var unsupported_text = _variation_sequence("語", 0xE0100)
+    var unsupported = shape_nominal(face, unsupported_text, TextStyle())
+    assert_true(len(unsupported) == 1)
+    assert_true(unsupported.glyph_ids()[0] == 4)
+    assert_true(unsupported.cluster_starts()[0] == 0)
+    assert_true(unsupported.cluster_ends()[0] == 7)
+    assert_true(unsupported.missing_glyph_count() == 0)
+    unsupported.validate_against_source(unsupported_text)
+
+    # A valid selector still clusters with its base when the face has no
+    # format 14 table at all.
+    var ordinary_face = _test_face()
+    var emoji_style_text = _variation_sequence("日", 0xFE0F)
+    var ordinary = shape_nominal(ordinary_face, emoji_style_text, TextStyle())
+    assert_true(len(ordinary) == 1)
+    assert_true(ordinary.glyph_ids()[0] == 2)
+    assert_true(ordinary.cluster_ends()[0] == 6)
+    ordinary.validate_against_source(emoji_style_text)
+
+
+def test_unpaired_variation_selectors_are_default_ignorable() raises:
+    var face = _uvs_face()
+    var selectors = String()
+    for selector in [
+        0x180B,
+        0x180C,
+        0x180D,
+        0x180F,
+        0xFE00,
+        0xFE0F,
+        0xE0100,
+        0xE01EF,
+    ]:
+        selectors += chr(selector)
+    var ignored = shape_nominal(face, selectors, TextStyle())
+    assert_true(ignored.is_empty())
+    assert_true(ignored.missing_glyph_count() == 0)
+    assert_true(ignored.source_byte_length() == selectors.byte_length())
+    ignored.validate_against_source(selectors)
+
+    var stacked = String("A")
+    stacked += chr(0xFE0F)
+    stacked += chr(0xFE00)
+    stacked += "日"
+    var stacked_run = shape_nominal(face, stacked, TextStyle())
+    assert_true(len(stacked_run) == 2)
+    assert_true(stacked_run.glyph_ids()[0] == 1)
+    assert_true(stacked_run.glyph_ids()[1] == 2)
+    assert_true(stacked_run.cluster_starts()[0] == 0)
+    assert_true(stacked_run.cluster_ends()[0] == 7)
+    assert_true(stacked_run.cluster_starts()[1] == 7)
+    assert_true(stacked_run.cluster_ends()[1] == 10)
+    assert_true(stacked_run.missing_glyph_count() == 0)
+    stacked_run.validate_against_source(stacked)
+
+
+def test_shape_nominal_into_reuses_capacity_across_uvs_and_ignored_runs() raises:
+    var face = _uvs_face()
+    var output = ShapeBuffer(capacity=8)
+    var explicit_text = _variation_sequence("本", 0xE0100)
+    shape_nominal_into(face, explicit_text, TextStyle(), output)
+    var retained_capacity = output.capacity()
+    assert_true(output.glyph_ids()[0] == 5)
+
+    var selectors = _variation_sequence("", 0xE0100)
+    shape_nominal_into(face, selectors, TextStyle(), output)
+    assert_true(output.is_empty())
+    assert_true(output.missing_glyph_count() == 0)
+    assert_true(output.capacity() == retained_capacity)
+    output.validate_against_source(selectors)
 
 
 def test_shape_nominal_rejects_unimplemented_directions() raises:

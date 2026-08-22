@@ -5,6 +5,21 @@ and uses semantic versioning for public releases.
 
 ## [Unreleased]
 
+### Added
+
+- Add validated OpenType `cmap` format 14 parsing and allocation-free,
+  binary-searched Unicode variation-sequence lookup.
+- Add `FontFace.variation_glyph_id(base, selector)`, preserving unsupported
+  pairs as `None` and valid glyph-zero mappings as `Some(0)`.
+- Make nominal shaping consume font-declared default and explicit IVSes as one
+  UTF-8 cluster while retaining the base glyph for unsupported pairs.
+
+### Fixed
+
+- Enforce specification-compatible Unicode cmap platform/encoding pairs and
+  zero language fields without rejecting valid repeated Macintosh encodings
+  that point to different language subtables.
+
 ## [0.1.0] - 2026-08-22
 
 ### Added

@@ -7,7 +7,7 @@ rendering:
 font bytes
   -> bounded SFNT/TTC directory
   -> validated FontFace table views
-  -> cmap + global/horizontal metrics
+  -> cmap 4/12 + optional cmap 14 + global/horizontal metrics
   -> shape_nominal(text, face, style)
   -> renderer-neutral GlyphRun
   -> downstream SVG, raster, PDF, plot, or UI renderer
@@ -39,6 +39,12 @@ The root package remains deliberately small. Raw endian readers, directory
 records, and table-specific formats are implementation details. Future
 GSUB/GPOS and outline support extend the middle of the pipeline; they do not
 require renderer-specific fields in `GlyphRun`.
+
+Format 14 is retained as a supplement to the selected primary Unicode cmap,
+never as its replacement. Its public lookup returns `Optional[Int]`, keeping an
+unsupported pair distinct from a supported mapping to glyph zero. Nominal
+shaping uses that distinction to retain the base glyph for unsupported pairs
+while preserving one source cluster across the base and selector.
 
 ## Performance model
 

@@ -19,6 +19,12 @@ def _write_u32(mut data: List[UInt8], offset: Int, value: Int):
     data[offset + 3] = UInt8(value & 0xFF)
 
 
+def _write_u24(mut data: List[UInt8], offset: Int, value: Int):
+    data[offset] = UInt8((value >> 16) & 0xFF)
+    data[offset + 1] = UInt8((value >> 8) & 0xFF)
+    data[offset + 2] = UInt8(value & 0xFF)
+
+
 def _read_u16(data: List[UInt8], offset: Int) -> Int:
     return (Int(data[offset]) << 8) | Int(data[offset + 1])
 
@@ -96,9 +102,122 @@ def _make_cmap4() -> List[UInt8]:
     return data^
 
 
-def make_test_font(format12: Bool = True) -> List[UInt8]:
-    """Build a six-glyph font mapping ASCII and three CJK characters."""
-    var cmap = _make_cmap12() if format12 else _make_cmap4()
+def _make_cmap12_with_uvs() -> List[UInt8]:
+    """Build nominal mappings plus shared, unaligned, reverse-ordered UVS data."""
+    var nominal_table = _make_cmap12()
+    # Strip the one-record cmap header, retaining only its format 12 subtable.
+    comptime nominal_length = 76
+    comptime format14_length = 83
+    comptime header_length = 20
+    var data = List[UInt8](
+        length=header_length + nominal_length + format14_length, fill=UInt8(0)
+    )
+    _write_u16(data, 0, 0)
+    _write_u16(data, 2, 2)
+    # Encoding records are sorted by platform ID, then encoding ID.
+    _write_u16(data, 4, 0)
+    _write_u16(data, 6, 5)
+    _write_u32(data, 8, header_length + nominal_length)
+    _write_u16(data, 12, 3)
+    _write_u16(data, 14, 10)
+    _write_u32(data, 16, header_length)
+    for index in range(nominal_length):
+        data[header_length + index] = nominal_table[12 + index]
+
+    var format14 = header_length + nominal_length
+    _write_u16(data, format14, 14)
+    _write_u32(data, format14 + 2, format14_length)
+    _write_u32(data, format14 + 6, 3)
+
+    # Children start at deliberately unaligned offsets. The first record's
+    # non-default table precedes its default table, and the third selector
+    # shares the first selector's exact default-table offset.
+    comptime shared_non_default = 43
+    comptime shared_default = 62
+    comptime second_non_default = 74
+    _write_u24(data, format14 + 10, 0xE0100)
+    _write_u32(data, format14 + 13, shared_default)
+    _write_u32(data, format14 + 17, shared_non_default)
+    _write_u24(data, format14 + 21, 0xE0101)
+    _write_u32(data, format14 + 24, 0)
+    _write_u32(data, format14 + 28, second_non_default)
+    _write_u24(data, format14 + 32, 0xE0102)
+    _write_u32(data, format14 + 35, shared_default)
+    _write_u32(data, format14 + 39, 0)
+
+    _write_u32(data, format14 + shared_non_default, 3)
+    _write_u24(data, format14 + shared_non_default + 4, 0x4E8C)
+    _write_u16(data, format14 + shared_non_default + 7, 1)
+    _write_u24(data, format14 + shared_non_default + 9, 0x672C)
+    _write_u16(data, format14 + shared_non_default + 12, 5)
+    _write_u24(data, format14 + shared_non_default + 14, 0x9AA8)
+    _write_u16(data, format14 + shared_non_default + 17, 4)
+
+    _write_u32(data, format14 + shared_default, 2)
+    _write_u24(data, format14 + shared_default + 4, 0x4E00)
+    data[format14 + shared_default + 7] = UInt8(0)
+    _write_u24(data, format14 + shared_default + 8, 0x65E5)
+    data[format14 + shared_default + 11] = UInt8(0)
+
+    _write_u32(data, format14 + second_non_default, 1)
+    _write_u24(data, format14 + second_non_default + 4, 0x65E5)
+    _write_u16(data, format14 + second_non_default + 7, 4)
+    return data^
+
+
+def _make_cmap12_with_mac_language_records() -> List[UInt8]:
+    """Build two classic Mac records followed by one supported Unicode cmap."""
+    var nominal_table = _make_cmap12()
+    comptime nominal_length = 76
+    comptime header_length = 28
+    comptime format6_length = 10
+    var data = List[UInt8](
+        length=header_length + 2 * format6_length + nominal_length, fill=UInt8(0)
+    )
+    _write_u16(data, 0, 0)
+    _write_u16(data, 2, 3)
+    _write_u16(data, 4, 1)
+    _write_u16(data, 6, 0)
+    _write_u32(data, 8, header_length)
+    _write_u16(data, 12, 1)
+    _write_u16(data, 14, 0)
+    _write_u32(data, 16, header_length + format6_length)
+    _write_u16(data, 20, 3)
+    _write_u16(data, 22, 10)
+    _write_u32(data, 24, header_length + 2 * format6_length)
+
+    # Format 6 language fields distinguish otherwise equal encoding records.
+    _write_u16(data, header_length, 6)
+    _write_u16(data, header_length + 2, format6_length)
+    _write_u16(data, header_length + 4, 0)
+    _write_u16(data, header_length + format6_length, 6)
+    _write_u16(data, header_length + format6_length + 2, format6_length)
+    _write_u16(data, header_length + format6_length + 4, 3)
+    for index in range(nominal_length):
+        data[header_length + 2 * format6_length + index] = nominal_table[12 + index]
+    return data^
+
+
+def _make_shared_cmap12() -> List[UInt8]:
+    """Build Unicode and Windows records sharing one exact format 12 offset."""
+    var nominal_table = _make_cmap12()
+    comptime nominal_length = 76
+    comptime header_length = 20
+    var data = List[UInt8](length=header_length + nominal_length, fill=UInt8(0))
+    _write_u16(data, 0, 0)
+    _write_u16(data, 2, 2)
+    _write_u16(data, 4, 0)
+    _write_u16(data, 6, 4)
+    _write_u32(data, 8, header_length)
+    _write_u16(data, 12, 3)
+    _write_u16(data, 14, 10)
+    _write_u32(data, 16, header_length)
+    for index in range(nominal_length):
+        data[header_length + index] = nominal_table[12 + index]
+    return data^
+
+
+def _make_test_font_from_cmap(var cmap: List[UInt8]) -> List[UInt8]:
     comptime table_count = 5
     var directory_length = 12 + 16 * table_count
     var head_offset = _align4(directory_length)
@@ -162,6 +281,30 @@ def make_test_font(format12: Bool = True) -> List[UInt8]:
     for index in range(len(cmap)):
         data[cmap_offset + index] = cmap[index]
     return data^
+
+
+def make_test_font(format12: Bool = True) -> List[UInt8]:
+    """Build a six-glyph font mapping ASCII and three CJK characters."""
+    var cmap = _make_cmap12() if format12 else _make_cmap4()
+    return _make_test_font_from_cmap(cmap^)
+
+
+def make_test_uvs_font() -> List[UInt8]:
+    """Build a format 12 face with default and non-default CJK UVSes."""
+    var cmap = _make_cmap12_with_uvs()
+    return _make_test_font_from_cmap(cmap^)
+
+
+def make_test_mac_language_cmap_font() -> List[UInt8]:
+    """Build a Unicode face retaining valid repeated Macintosh encodings."""
+    var cmap = _make_cmap12_with_mac_language_records()
+    return _make_test_font_from_cmap(cmap^)
+
+
+def make_test_shared_cmap_subtable_font() -> List[UInt8]:
+    """Build two supported encoding records sharing the same valid subtable."""
+    var cmap = _make_shared_cmap12()
+    return _make_test_font_from_cmap(cmap^)
 
 
 def make_test_collection() -> List[UInt8]:
@@ -277,4 +420,187 @@ def make_incompatible_format4_encoding_font() -> List[UInt8]:
     var cmap_offset = _read_u32(data, 12 + 16 + 8)
     # Windows full-repertoire encoding 10 requires format 12, not format 4.
     _write_u16(data, cmap_offset + 6, 10)
+    return data^
+
+
+def _format14_layout(data: List[UInt8]) -> Tuple[Int, Int]:
+    var cmap_offset = _read_u32(data, 12 + 16 + 8)
+    # The sorted Unicode variation encoding record is the first cmap record.
+    var format14 = cmap_offset + _read_u32(data, cmap_offset + 8)
+    return (cmap_offset, format14)
+
+
+def make_bad_format14_platform_font() -> List[UInt8]:
+    var data = make_test_uvs_font()
+    var cmap_offset, _ = _format14_layout(data)
+    _write_u16(data, cmap_offset + 4, 2)
+    return data^
+
+
+def make_bad_format14_encoding_font() -> List[UInt8]:
+    var data = make_test_uvs_font()
+    var cmap_offset, _ = _format14_layout(data)
+    _write_u16(data, cmap_offset + 6, 4)
+    return data^
+
+
+def make_bad_format14_length_font() -> List[UInt8]:
+    var data = make_test_uvs_font()
+    var _, format14 = _format14_layout(data)
+    _write_u32(data, format14 + 2, 0x7FFFFFFF)
+    return data^
+
+
+def make_bad_format14_selector_order_font() -> List[UInt8]:
+    var data = make_test_uvs_font()
+    var _, format14 = _format14_layout(data)
+    _write_u24(data, format14 + 21, 0xE0100)
+    return data^
+
+
+def make_bad_format14_selector_font() -> List[UInt8]:
+    var data = make_test_uvs_font()
+    var _, format14 = _format14_layout(data)
+    _write_u24(data, format14 + 10, 0x41)
+    return data^
+
+
+def make_bad_format14_child_offset_font() -> List[UInt8]:
+    var data = make_test_uvs_font()
+    var _, format14 = _format14_layout(data)
+    _write_u32(data, format14 + 13, 82)
+    return data^
+
+
+def make_bad_format14_default_scalar_font() -> List[UInt8]:
+    var data = make_test_uvs_font()
+    var _, format14 = _format14_layout(data)
+    var default_table = format14 + _read_u32(data, format14 + 13)
+    _write_u24(data, default_table + 4, 0xD800)
+    return data^
+
+
+def make_bad_format14_non_default_glyph_font() -> List[UInt8]:
+    var data = make_test_uvs_font()
+    var _, format14 = _format14_layout(data)
+    var non_default_table = format14 + _read_u32(data, format14 + 17)
+    _write_u16(data, non_default_table + 7, 6)
+    return data^
+
+
+def make_bad_format14_partition_font() -> List[UInt8]:
+    var data = make_test_uvs_font()
+    var _, format14 = _format14_layout(data)
+    var non_default_table = format14 + _read_u32(data, format14 + 17)
+    _write_u24(data, non_default_table + 4, 0x65E5)
+    return data^
+
+
+def make_format14_only_font() -> List[UInt8]:
+    var data = make_test_uvs_font()
+    var cmap_offset, _ = _format14_layout(data)
+    # Make the primary format 12 record a non-Unicode Macintosh mapping.
+    _write_u16(data, cmap_offset + 12, 4)
+    _write_u16(data, cmap_offset + 14, 0)
+    return data^
+
+
+def make_incompatible_format12_encoding6_font() -> List[UInt8]:
+    var data = make_test_font(True)
+    var cmap_offset = _read_u32(data, 12 + 16 + 8)
+    _write_u16(data, cmap_offset + 4, 0)
+    _write_u16(data, cmap_offset + 6, 6)
+    return data^
+
+
+def make_bad_cmap_encoding_order_font() -> List[UInt8]:
+    var data = make_test_uvs_font()
+    var cmap_offset, _ = _format14_layout(data)
+    # Place 0/4 after 0/5; records sort first by platform, then encoding.
+    _write_u16(data, cmap_offset + 12, 0)
+    _write_u16(data, cmap_offset + 14, 4)
+    return data^
+
+
+def make_bad_format4_language_font() -> List[UInt8]:
+    var data = make_test_font(False)
+    var subtable, _, _, _ = _format4_layout(data)
+    _write_u16(data, subtable + 4, 1)
+    return data^
+
+
+def make_bad_format12_language_font() -> List[UInt8]:
+    var data = make_test_font(True)
+    var cmap_offset = _read_u32(data, 12 + 16 + 8)
+    var subtable = cmap_offset + _read_u32(data, cmap_offset + 8)
+    _write_u32(data, subtable + 8, 1)
+    return data^
+
+
+def make_test_uvs_explicit_glyph_zero_font() -> List[UInt8]:
+    var data = make_test_uvs_font()
+    var _, format14 = _format14_layout(data)
+    var non_default_table = format14 + _read_u32(data, format14 + 17)
+    _write_u16(data, non_default_table + 12, 0)
+    return data^
+
+
+def make_test_uvs_empty_selector_font() -> List[UInt8]:
+    var data = make_test_uvs_font()
+    var _, format14 = _format14_layout(data)
+    # OpenType permits both offsets to be zero; it is simply non-matching.
+    _write_u32(data, format14 + 35, 0)
+    return data^
+
+
+def make_test_empty_format14_font() -> List[UInt8]:
+    var data = make_test_uvs_font()
+    var _, format14 = _format14_layout(data)
+    _write_u32(data, format14 + 6, 0)
+    return data^
+
+
+def make_bad_cmap_subtable_before_records_font() -> List[UInt8]:
+    var data = make_test_font(True)
+    var cmap_offset = _read_u32(data, 12 + 16 + 8)
+    _write_u32(data, cmap_offset + 8, 4)
+    return data^
+
+
+def make_bad_format14_default_count_font() -> List[UInt8]:
+    var data = make_test_uvs_font()
+    var _, format14 = _format14_layout(data)
+    var default_table = format14 + _read_u32(data, format14 + 13)
+    _write_u32(data, default_table, 0x10000)
+    return data^
+
+
+def make_bad_format14_non_default_count_font() -> List[UInt8]:
+    var data = make_test_uvs_font()
+    var _, format14 = _format14_layout(data)
+    var non_default_table = format14 + _read_u32(data, format14 + 17)
+    _write_u32(data, non_default_table, 0x10000)
+    return data^
+
+
+def make_test_uvs_max_default_range_font() -> List[UInt8]:
+    var data = make_test_uvs_font()
+    var _, format14 = _format14_layout(data)
+    var default_table = format14 + _read_u32(data, format14 + 13)
+    _write_u24(data, default_table + 4, 0x3400)
+    data[default_table + 7] = UInt8(255)
+    return data^
+
+
+def make_bad_format14_selector_180e_font() -> List[UInt8]:
+    var data = make_test_uvs_font()
+    var _, format14 = _format14_layout(data)
+    _write_u24(data, format14 + 10, 0x180E)
+    return data^
+
+
+def make_test_uvs_selector_180f_font() -> List[UInt8]:
+    var data = make_test_uvs_font()
+    var _, format14 = _format14_layout(data)
+    _write_u24(data, format14 + 10, 0x180F)
     return data^

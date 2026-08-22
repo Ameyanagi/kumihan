@@ -4,6 +4,20 @@ Kumihan is an original Mojo implementation. OpenType and Unicode specifications
 are the normative sources. Other projects are used to compare observable
 behavior, understand decomposition boundaries, and design independent tests.
 
+## Normative specifications
+
+- [OpenType 1.9.1 `cmap`](https://learn.microsoft.com/en-us/typography/opentype/spec/cmap)
+  defines the format 4, 12, and 14 structures and variation-sequence lookup
+  semantics.
+- [Unicode 17.0, chapter 23](https://www.unicode.org/versions/Unicode17.0.0/core-spec/chapter-23/)
+  and the [Unicode 17.0 `Variation_Selector` property](https://www.unicode.org/Public/17.0.0/ucd/PropList.txt)
+  define the recognized selector code points.
+- [UTS #37](https://www.unicode.org/reports/tr37/) defines the Ideographic
+  Variation Database model. Kumihan does not yet bundle its registry data.
+- [UAX #29](https://www.unicode.org/reports/tr29/) defines the grapheme-cluster
+  behavior used to preserve source coverage around default-ignorable variation
+  selectors.
+
 ## Existing Mojo work
 
 - [canvas_mojo](https://github.com/randyzwitch/canvas_mojo) — MIT. A Mojo

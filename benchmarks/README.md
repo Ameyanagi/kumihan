@@ -21,10 +21,13 @@ measure:
 - alternating construction of both faces from one already-created
   `FontCollection`, proving that the TTC backing allocation remains shared;
 - cached `cmap` format 12 lookups over deterministic ASCII and CJK hits and
-  misses, including a supplementary-plane character; and
+  misses, including a supplementary-plane character;
+- cached `cmap` format 14 lookup distributions for supported default,
+  supported explicit, and unsupported variation sequences; and
 - both allocating `shape_nominal` and retained-capacity `shape_nominal_into`
   over identical deterministic mixed ASCII, Japanese, Han, Hangul, and
-  supplementary-plane text.
+  supplementary-plane text, plus retained-capacity shaping of mixed supported
+  default, supported explicit, and unsupported ideographic variation sequences.
 
 The construction cases perform 4,096 single-face constructions or 4,096 TTC
 face pairs per sample. Input fixture generation and SFNT byte copying are
@@ -32,9 +35,12 @@ outside the single-face timer. TTC collection construction is outside the
 shared-face timer. Lookup cases contain 1,024, 65,536, and 1,048,576 scalars,
 normalized to 1,048,576 lookup operations per sample. Shaping cases contain
 256, 4,096, and 65,536 scalars, normalized to 65,536 scalar operations per
-sample. Each case performs three warmup rounds and then records 31 independent
-elapsed-time samples with `perf_counter_ns`. Reported p50 and p95 values use
-nearest rank (sorted indices 15 and 29).
+sample. Each format 14 category performs 1,048,576 variation lookups per
+sample. IVS shaping contains 128, 2,048, and 32,768 two-scalar sequences,
+normalized to 65,536 input scalar operations per sample. Each case performs
+three warmup rounds and then records 31 independent elapsed-time samples with
+`perf_counter_ns`. Reported p50 and p95 values use nearest rank (sorted indices
+15 and 29).
 
 Every sample is checked against a deterministic semantic checksum. Lookup
 checksums consume positions and glyph IDs. Shaping checksums consume glyph IDs,

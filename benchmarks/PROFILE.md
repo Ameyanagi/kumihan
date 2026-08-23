@@ -253,3 +253,71 @@ maximum RSS. Relative to the initial post-mask profile, instructions changed
 by only +0.0006% and cycles improved by about 1.7%. The feature-offset scratch
 therefore does not materially change the dominant long-run work. No additional
 xctrace recording or SIMD change is justified by this rerun.
+
+## Unicode 17 automatic-script itemization
+
+Recorded 2026-08-23 on the same Apple M4/macOS 26.5.1 host with stable Mojo
+1.0.0. The v7 benchmark adds two controls around the new `Script.AUTO` path:
+an adversarial repeating DFLT/Han/Hiragana/Katakana/Hangul/Bopomofo input, and
+homogeneous Han shaped once with AUTO and once with explicit `Script.HAN`.
+The 4,096-scalar adversarial input resolves to 3,413 runs but only five distinct
+OpenType tags. It intentionally stresses run fragmentation rather than modeling
+natural prose.
+
+Before plan reuse, the v6 retained-buffer adversarial result was
+217.987/235.168 ns per scalar at p50/p95, versus 66.284/67.017 for a forced
+whole-input DFLT control. Time Profiler showed selection, feature gathering,
+lookup-mask construction, and bounded GSUB table reads repeated for nearly
+every short range.
+
+`ShapeBuffer` now prepares at most one preflighted plan for each observed tag
+per call. One full byte mask is reused only while constructing a plan; each
+resolved plan retains ordered selected `UInt16` lookup indices, so every range
+executes only selected lookups instead of rescanning the complete LookupList.
+The itemizer also retains a packed `UInt16` descriptor plus one `UInt8` resolved
+script per glyph, appends resolved values only once, and allocates bracket-stack
+storage lazily. The exact final v7 rerun was:
+
+| Public retained-buffer path | Run | p50 ns/scalar | p95 ns/scalar | Checksum |
+| --- | ---: | ---: | ---: | ---: |
+| AUTO fragmented mixed CJK | 16 | 180.847 | 184.845 | 1,795,243 |
+| forced DFLT mixed control | 16 | 79.071 | 81.177 | 1,795,108 |
+| AUTO fragmented mixed CJK | 4,096 | 133.148 | 136.200 | 671,266,123 |
+| forced DFLT mixed control | 4,096 | 64.575 | 67.963 | 662,875,468 |
+| AUTO homogeneous Han | 16 | 126.801 | 127.167 | 1,795,712 |
+| explicit homogeneous Han | 16 | 76.050 | 80.475 | 1,795,712 |
+| AUTO homogeneous Han | 4,096 | 107.971 | 108.551 | 693,665,792 |
+| explicit homogeneous Han | 4,096 | 72.906 | 73.212 | 693,665,792 |
+
+The fragmented long p50 improved by 38.9% from the pre-reuse result. The
+homogeneous pair isolates about 35.1 ns/scalar of Unicode classification and
+run construction on this synthetic repeated-Han input; selection and output
+are otherwise identical. After
+`O(distinct tags × total lookup count)` plan construction, execution is now
+`O(run count × selected lookup count + substitution glyph work)` rather than
+scanning every lookup for every run. A regression fixture selects one lookup
+from a 4,096-entry LookupList and reuses that plan across disjoint ranges.
+
+The final fixed 33,554,432-scalar AUTO profile improved from 7.85 to 4.53
+seconds of user time, 124,710,477,446 to 72,494,208,447 retired instructions,
+and 22,549,134,145 to 13,104,416,736 cycles. Maximum RSS was 12,992,512 bytes.
+Its forced-DFLT control took 2.19 seconds, 35,765,796,314 instructions, and
+6,470,762,213 cycles. The AUTO mode reported 3,413 runs, five tags, a seven-byte
+temporary mask, and five retained selected indices for the seven-lookup fixture.
+
+The preceding plan-reuse trace contained 4,735 samples, 3,985 without an
+unwindable top frame. Of the 750 resolved top stacks, 431 were in nominal
+decode/cmap/output,
+108 in generated Unicode property lookup, 101 in descriptor helpers or push,
+18 in Script_Extensions candidate lookup, and only 10 in the named cached-plan
+range functions. Different unwind rates make raw trace counts unsuitable for a
+before/after percentage. The final compact-index refinement was checked with
+the same fixed-work counter profile; the instruction, cycle, and latency
+results are the authorities.
+
+This profile does not justify SIMD. Exact property lookup is a divergent
+decision tree, the run resolver has loop-carried state, and each candidate
+intersection is only three scalar `UInt64` ANDs. On the adversarial input most
+runs contain one or two glyphs, leaving no useful batching width. Plan reuse and
+compact scalar scratch remove measured repeated work without adding vector
+setup, lane extraction, padding, or a second correctness path.

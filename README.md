@@ -3,7 +3,7 @@
 Validated OpenType font data and renderer-neutral text shaping foundations for
 Mojo.
 
-> **Experimental v0.1 API.** Source compatibility may change before 1.0.
+> **Experimental pre-1.0 API.** Source compatibility may change before 1.0.
 
 Kumihan is the font and shaping layer for the Mojo graphics ecosystem. It is
 designed for complete CJK typography without making a plotting or rendering
@@ -51,21 +51,29 @@ def main() raises:
         TextStyle()
         .with_size(16.0)
         .with_language(Language.JA)
-        .with_script(Script.HAN)
     )
 ```
+
+`TextStyle()` automatically itemizes mixed Han, Hiragana/Katakana, Hangul,
+Bopomofo, and other text. Append `.with_script(Script.HAN)` to force one
+OpenType script or `.with_script(Script.DEFAULT)` to force `DFLT` across the
+entire input; `.with_script(Script.AUTO)` restores inference in a chain.
 
 `TextStyle`, `Language`, `Script`, `Direction`, `FontCollection`, `FontFace`,
 `GlyphRun`, `ShapeBuffer`, `shape`, `shape_into`, `shape_nominal`, and
 `shape_nominal_into` form the intended small root surface. Font parsing,
 validated style modifiers, and shaping are fallible; default construction and
-inspection are ordinary value operations.
+policy inspection through `tag()` is an ordinary value operation. Resolving an
+actual OpenType tag through `open_type_tag()` is fallible because automatic
+itemization has no single tag.
 
 Use `shape` for normal horizontal text. It applies required features and
 language-selected `locl` SingleSubst lookups automatically. Use
 `shape_nominal` when an exact cmap-plus-hmtx result is required as a reference
-or inspection oracle. Callers currently provide one script per run; mixed-script
-text must be segmented before shaping.
+or inspection oracle. Automatic itemization uses pinned Unicode 17 Script,
+Script_Extensions, General_Category, and paired-bracket data. Language remains
+explicit because a Han code point cannot determine Japanese, Korean, Simplified
+Chinese, or Traditional Chinese glyph preference.
 
 ## Current foundation
 
@@ -83,16 +91,19 @@ text must be segmented before shaping.
   1/2, and ExtensionSubst type 7 to type 1.
 - Apply required and `locl` lookups in LookupList order with exact CJK script
   and language-system selection, stable clusters, and final-glyph metrics.
+- Itemize mixed CJK text automatically without copying glyph subranges;
+  explicit `Script` values remain whole-input overrides.
 - Retain explicit direction, language, style, cluster, and glyph-run contracts
   that later shaping can extend without changing renderer APIs.
 - Parse a font face once and reuse sorted-table lookup state across text runs.
 
 This is not yet a complete CJK text engine. Kumihan does **not** yet implement
-GPOS or GSUB beyond required/`locl` SingleSubst, automatic Unicode script
-itemization, a bundled registry of sanctioned Unicode variation sequences,
-glyph outlines, system-font discovery or locale-aware fallback, bidirectional
-layout, CJK line breaking, vertical layout, or rasterization. These are roadmap
-work, not hidden best-effort behavior. See [scope and roadmap](docs/scope.md).
+GPOS or GSUB beyond required/`locl` SingleSubst, a bundled registry of
+sanctioned Unicode variation sequences, full emoji/extended-grapheme
+itemization, glyph outlines, system-font discovery or locale-aware fallback,
+bidirectional layout, CJK line breaking, vertical layout, or rasterization.
+These are roadmap work, not hidden best-effort behavior. See
+[scope and roadmap](docs/scope.md).
 
 ## Ecosystem boundary
 
@@ -134,4 +145,7 @@ license record, exact-revision ledger, and clean-room rules are in
 ## License
 
 Kumihan is dual-licensed under [MIT](LICENSE-MIT) or
-[Apache-2.0](LICENSE-APACHE), at your option.
+[Apache-2.0](LICENSE-APACHE), at your option. Checked-in tables derived from
+Unicode data are distributed under the
+[Unicode License v3](LICENSES/Unicode-3.0.txt); see
+[data provenance](docs/data-provenance.md).

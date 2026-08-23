@@ -14,7 +14,10 @@ package = { cmd = "rattler-build build --recipe conda.recipe/recipe.yaml -c cond
 precompile = { cmd = "mojo precompile --Werror --warn-on-unstable-apis src/kumihan -o .pixi/kumihan.mojoc", description = "Precompile the package with warnings as errors" }
 readme-check = { cmd = "bash scripts/check-readme.sh", description = "Compile the README's fenced Mojo blocks exactly as pasted" }
 test = { cmd = "bash scripts/test.sh", description = "Run all Mojo TestSuite files" }
+unicode-check = { cmd = "python3 scripts/generate-unicode-scripts.py --check", description = "Verify the checked-in Unicode 17 script tables against checksum-pinned sources" }
+unicode-generate = { cmd = "python3 scripts/generate-unicode-scripts.py", description = "Regenerate Unicode 17 script tables from checksum-pinned sources" }
 
 [dependencies]
 mojo = "==1.0.0"
+python = ">=3.11,<3.15"
 rattler-build = ">=0.74,<0.75"

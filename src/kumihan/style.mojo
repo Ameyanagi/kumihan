@@ -106,15 +106,17 @@ struct Language(Copyable, Equatable, ImplicitlyCopyable):
 
 
 struct Script(Copyable, Equatable, ImplicitlyCopyable):
-    """A compact OpenType script selection for shaping.
+    """A compact automatic or explicit script selection for shaping.
 
-    The value stores the packed four-byte OpenType tag directly, avoiding tag
-    parsing and allocation in shaping hot paths. ``DEFAULT`` lets a font's
-    default script system handle text whose script is not known by the caller.
+    Explicit values store their packed four-byte OpenType tag directly,
+    avoiding tag parsing and allocation in shaping hot paths. ``AUTO`` asks
+    Kumihan to itemize supported CJK scripts from Unicode data. ``DEFAULT``
+    explicitly forces a whole run through the font's ``DFLT`` script system.
     """
 
     var _value: Int
 
+    comptime AUTO = Script(_value=0)
     comptime DEFAULT = Script(_value=0x44464C54)  # DFLT
     comptime HAN = Script(_value=0x68616E69)  # hani
     comptime KANA = Script(_value=0x6B616E61)  # kana
@@ -127,7 +129,8 @@ struct Script(Copyable, Equatable, ImplicitlyCopyable):
     def validate(self) raises:
         """Reject packed tags outside Kumihan's supported script set."""
         if (
-            self != Self.DEFAULT
+            self != Self.AUTO
+            and self != Self.DEFAULT
             and self != Self.HAN
             and self != Self.KANA
             and self != Self.HANGUL
@@ -135,8 +138,10 @@ struct Script(Copyable, Equatable, ImplicitlyCopyable):
         ):
             raise Error("invalid Kumihan script tag: ", self._value)
 
-    def open_type_tag(self) -> String:
-        """Return the four-byte OpenType script tag."""
+    def open_type_tag(self) raises -> String:
+        """Return one OpenType tag; reject automatic mixed-script policy."""
+        if self == Self.AUTO:
+            raise Error("automatic script itemization has no single OpenType tag")
         if self == Self.HAN:
             return String("hani")
         if self == Self.KANA:
@@ -148,11 +153,23 @@ struct Script(Copyable, Equatable, ImplicitlyCopyable):
         return String("DFLT")
 
     def tag(self) -> String:
-        """Return ``open_type_tag``."""
-        return self.open_type_tag()
+        """Return a compact policy label, including ``auto``."""
+        if self == Self.AUTO:
+            return String("auto")
+        if self == Self.HAN:
+            return String("hani")
+        if self == Self.KANA:
+            return String("kana")
+        if self == Self.HANGUL:
+            return String("hang")
+        if self == Self.BOPOMOFO:
+            return String("bopo")
+        return String("DFLT")
 
-    def _open_type_tag(self) -> Int:
-        """Return the packed big-endian tag without allocating."""
+    def _open_type_tag(self) raises -> Int:
+        """Return one packed tag; reject the non-tag ``AUTO`` policy."""
+        if self == Self.AUTO:
+            raise Error("automatic script itemization has no single OpenType tag")
         return self._value
 
     def __eq__(self, other: Self) -> Bool:
@@ -208,10 +225,10 @@ struct TextStyle(Copyable, Equatable, ImplicitlyCopyable):
     var _direction: Direction
 
     def __init__(out self):
-        """Construct a 16-unit, undetermined-language horizontal style."""
+        """Construct an automatic-script 16-unit horizontal style."""
         self._size = 16.0
         self._language = Language.UND
-        self._script = Script.DEFAULT
+        self._script = Script.AUTO
         self._direction = Direction.LEFT_TO_RIGHT
 
     def __init__(
@@ -219,7 +236,7 @@ struct TextStyle(Copyable, Equatable, ImplicitlyCopyable):
         *,
         size: Float64,
         language: Language = Language.UND,
-        script: Script = Script.DEFAULT,
+        script: Script = Script.AUTO,
         direction: Direction = Direction.LEFT_TO_RIGHT,
     ) raises:
         """Construct and validate all style fields in deterministic order."""
@@ -245,7 +262,7 @@ struct TextStyle(Copyable, Equatable, ImplicitlyCopyable):
         return result^
 
     def with_script(self, script: Script) raises -> Self:
-        """Return a validated copy using ``script``."""
+        """Return a copy using an automatic or whole-input script policy."""
         script.validate()
         var result = self.copy()
         result._script = script

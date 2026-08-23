@@ -9,8 +9,9 @@ font bytes
   -> validated FontFace table views
   -> cmap 4/12 + optional cmap 14 + global/horizontal metrics
   -> shape_nominal(text, face, style)             [reference path]
+  -> Unicode 17 Script/Script_Extensions itemization [AUTO shape path]
   -> optional GSUB Script/LangSys/Feature/Lookup [shape path]
-  -> required + locl SingleSubst
+  -> ranged required + locl SingleSubst
   -> renderer-neutral GlyphRun
   -> downstream SVG, raster, PDF, plot, or UI renderer
 ```
@@ -52,16 +53,31 @@ shaping uses that distinction to retain the base glyph for unsupported pairs
 while preserving one source cluster across the base and selector.
 
 GSUB is parsed and validated once with the face. Selection resolves one
-caller-provided script and language system, gathers its required Feature and
+explicit or automatically itemized script and one language system, gathers its
+required Feature and
 `locl` Feature offsets, sorts and deduplicates physical aliases, then walks the
 LookupList in numeric order. Reusable shaping retains both feature-offset and
-lookup-mask scratch rather than allocating them for every run.
+temporary lookup-mask scratch rather than allocating them for every run. Each
+resolved plan retains only its ordered selected `UInt16` lookup indices, so
+execution skips unselected LookupList entries. Automatic shaping resolves each
+observed script plan at most once per call and reuses it across noncontiguous
+ranges with the same tag.
 Unsupported selected lookups, required vertical-only features, and
-GDEF-dependent filtering fail in a preflight pass before glyph IDs are mutated.
-A SingleSubst changes neither glyph count nor cluster ranges; advances and
-missing-glyph state are recomputed from final glyph IDs. GSUB 1.1
+GDEF-dependent filtering fail before that plan mutates its selected range; any
+later mixed-run failure clears the public buffer's logical output while
+retaining its allocations. A SingleSubst changes neither glyph count nor
+cluster ranges; advances and missing-glyph state are recomputed from final
+glyph IDs. GSUB 1.1
 FeatureVariations alternates are not evaluated; the default Feature tables are
 used as permitted for clients without variation-feature support.
+
+Automatic shaping classifies each emitted glyph scalar once during the same
+UTF-8 traversal used for cmap. A reusable internal itemizer retains exact
+Unicode Script candidate sets, resolves Common/Inherited context and canonical
+bracket pairs, then exposes only maximal glyph-index ranges and packed OpenType
+tags to GSUB. SingleSubst traverses those half-open ranges directly in the
+original glyph list; it never creates per-run slices. Nominal shaping and every
+explicit `Script` override skip itemization storage and work.
 
 ## Performance model
 
@@ -69,12 +85,18 @@ The primary units of reuse are a `FontCollection`, parsed `FontFace`, and
 caller-owned `ShapeBuffer`, not a file path or one transient output allocation
 per run. Applications should load a collection once, retain its faces, then
 shape many runs into reusable storage. The initial implementation favors compact
-validated table descriptors, a bounded reusable lookup mask, and binary search
-over eagerly expanding entire maps. Physical Feature offsets use a second
-reusable scratch list so aliases are sorted and traversed once. Later caches
-must be explicit, bounded,
+validated table descriptors, a bounded temporary lookup mask, compact selected
+lookup indices, and binary search over eagerly expanding entire maps. Physical
+Feature offsets use a second reusable scratch list so aliases are sorted and
+traversed once. Later caches must be explicit, bounded,
 keyed by font identity and variation coordinates, and safe to share without
 hidden copies.
+
+Unicode property tables are generated offline from checksum-pinned Unicode 17
+data and compiled into the package. Consumers need neither Python nor network
+access. The scalar decision tree and run resolver remain correctness oracles;
+classification, intersection, and ordered GSUB selection are profiled before
+introducing any specialized cache or SIMD path.
 
 SIMD is appropriate only after profiling exposes regular batched work, such as
 outline transforms or raster preparation. Variable-length table decoding,

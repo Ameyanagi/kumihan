@@ -4,6 +4,34 @@ Kumihan is a renderer-neutral font and shaping library. The package boundary is
 chosen so one parsed font, fallback decision, and shaped glyph run can serve
 SVG, raster, PDF, plotting, and UI consumers.
 
+## Unreleased 0.2 script itemization
+
+The default `TextStyle()` policy is `Script.AUTO`. During `shape(...)` and
+`shape_into(...)`, Kumihan classifies the emitted glyph clusters from pinned
+Unicode 17 Script, Script_Extensions, General_Category, and BidiBrackets data,
+then applies required and `locl` GSUB separately to each half-open glyph range.
+The source remains one UTF-8 input and is decoded once; glyph ranges are never
+sliced or copied.
+
+Kumihan preserves all Unicode Script identities while resolving candidates,
+then maps finalized Han, Hiragana/Katakana, Hangul, and Bopomofo ranges to
+`hani`, `kana`, `hang`, and `bopo`; every other result maps to `DFLT`. Combining
+marks stay with their base sequence, variation selectors remain in the base
+cluster, and canonical bracket pairs follow their enclosing script. Pure
+Common/Inherited text resolves deterministically to `DFLT`. UAX #24 defines the
+properties and guidance but not one normative run algorithm, so neighbor and
+bracket resolution are documented Kumihan policy.
+
+`TextStyle.with_script(...)` remains a whole-input override. `Script.DEFAULT`
+forces `DFLT`, a CJK value forces its corresponding OpenType tag, and
+`Script.AUTO` restores inference. Language is never inferred: callers still
+select Japanese, Korean, Simplified Chinese, Traditional Chinese, or Hong Kong
+forms with `with_language(...)`.
+
+This slice covers UAX #24 combining sequences, not complete UAX #29 extended
+grapheme segmentation. It does not claim atomic itemization for every emoji
+ZWJ, regional-indicator, modifier, tag, or Indic-conjunct sequence.
+
 ## Version 0.1.0
 
 The first release is a narrow, testable foundation:
@@ -49,10 +77,10 @@ source clusters unchanged and horizontal metrics come from the final glyph.
 
 `shape(...)` and `shape_into(...)` provide this behavior. `shape_nominal(...)`
 and `shape_nominal_into(...)` remain exact cmap-plus-hmtx reference paths.
-`TextStyle.with_script(...)` selects `DFLT`, `hani`, `kana`, `hang`, or `bopo`,
-and `with_language(...)` selects the corresponding default or CJK OpenType
-language system. A call describes one already-segmented script run; automatic
-UAX #24 itemization remains a later layer.
+By default, the automatic policy above selects `DFLT`, `hani`, `kana`, `hang`,
+or `bopo` ranges. `TextStyle.with_script(...)` can instead force one of those
+scripts across the whole call, and `with_language(...)` selects the
+corresponding default or CJK OpenType language system.
 
 This slice is deliberately horizontal. It does not expose vertical-only GSUB
 features such as `vert`, `vrt2`, `vrtr`, or `vkna`: correct vertical output also

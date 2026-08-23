@@ -27,8 +27,18 @@ behavior, understand decomposition boundaries, and design independent tests.
 - [UAX #29](https://www.unicode.org/reports/tr29/) defines the grapheme-cluster
   behavior used to preserve source coverage around default-ignorable variation
   selectors.
-- [UAX #24](https://www.unicode.org/reports/tr24/) defines the future automatic
-  script-itemization layer; current shaping accepts one explicit script run.
+- [UAX #24 revision 39](https://www.unicode.org/reports/tr24/) defines Unicode
+  Script and Script_Extensions plus guidance for resolving Common, Inherited,
+  combining marks, and paired punctuation. It does not prescribe one normative
+  script-run algorithm; the exact neighboring-context policy is Kumihan's.
+- Unicode 17's versioned
+  [`Scripts.txt`](https://www.unicode.org/Public/17.0.0/ucd/Scripts.txt),
+  [`ScriptExtensions.txt`](https://www.unicode.org/Public/17.0.0/ucd/ScriptExtensions.txt),
+  [`PropertyValueAliases.txt`](https://www.unicode.org/Public/17.0.0/ucd/PropertyValueAliases.txt),
+  [`DerivedGeneralCategory.txt`](https://www.unicode.org/Public/17.0.0/ucd/extracted/DerivedGeneralCategory.txt),
+  and [`BidiBrackets.txt`](https://www.unicode.org/Public/17.0.0/ucd/BidiBrackets.txt)
+  are the generated automatic-itemization inputs. Exact checksums and license
+  provenance are recorded in `docs/data-provenance.md`.
 - [UAX #50](https://www.unicode.org/reports/tr50/) defines vertical orientation
   behavior required before vertical shaping can be exposed.
 
@@ -50,6 +60,10 @@ copied implementation from either project.
 
 ## Rust behavioral references
 
+- [`unicode-script`](https://github.com/unicode-rs/unicode-script) — MIT OR
+  Apache-2.0. Reference for exact UAX #24 Script_Extensions set semantics and a
+  compact multiword representation; Kumihan's generated code and resolution
+  policy remain independent.
 - [Fontations and Skrifa](https://github.com/googlefonts/fontations) — MIT OR
   Apache-2.0. Reference for robust font parsing, metadata, variation-aware
   metrics, Unicode mapping, and renderer-neutral outlines.
@@ -89,6 +103,7 @@ that Kumihan matches their complete feature sets.
 
 | Reference | Exact reviewed commit |
 |---|---|
+| unicode-script | [`20cae8782e71e26180198b350b1746c0ba042c41`](https://github.com/unicode-rs/unicode-script/commit/20cae8782e71e26180198b350b1746c0ba042c41) |
 | canvas_mojo | [`d9420d424069f7f8602c7e56fc8843427f4d89d7`](https://github.com/randyzwitch/canvas_mojo/commit/d9420d424069f7f8602c7e56fc8843427f4d89d7) |
 | mojo-fonttools | [`cc46dace919903d6c04ae4f4527abb8ce593a9ca`](https://github.com/lee101/mojo-fonttools/commit/cc46dace919903d6c04ae4f4527abb8ce593a9ca) |
 | Fontations/Skrifa | [`f886c9069b08eaddcb1caced3a44b0d8291a159a`](https://github.com/googlefonts/fontations/commit/f886c9069b08eaddcb1caced3a44b0d8291a159a) |

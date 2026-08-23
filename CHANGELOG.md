@@ -5,6 +5,21 @@ and uses semantic versioning for public releases.
 
 ## [Unreleased]
 
+### Added
+
+- Add automatic mixed-CJK script itemization backed by checksum-pinned Unicode
+  17 Script, Script_Extensions, General_Category, and paired-bracket data.
+- Preserve exact Unicode script candidates internally while mapping finalized
+  runs to `DFLT`, `hani`, `kana`, `hang`, or `bopo` for ranged GSUB execution.
+
+### Changed
+
+- Make `Script.AUTO` the default chainable style policy; use
+  `.with_script(Script.DEFAULT)` to retain the previous whole-input `DFLT`
+  behavior, while explicit CJK values remain whole-input overrides.
+- Apply required and `locl` SingleSubst lookups directly to half-open script
+  ranges without slicing glyph storage or decoding the source twice.
+
 ## [0.1.0] - 2026-08-23
 
 ### Added

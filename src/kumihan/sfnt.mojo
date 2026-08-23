@@ -5,7 +5,7 @@ from std.memory import ArcPointer
 
 from .binary import _i16, _require_range, _scaled_size, _u16, _u16_unchecked, _u32
 from .cmap import Cmap, _parse_cmap
-from .gsub import Gsub, _parse_gsub
+from .gsub import Gsub, _GsubPlan, _parse_gsub
 
 
 comptime _TAG_TTCF = 0x74746366
@@ -323,6 +323,64 @@ struct FontFace(Movable):
             language_tag,
             lookup_mask,
             feature_offsets,
+        )
+
+    def _apply_locl_range_into(
+        self,
+        mut glyph_ids: List[Int],
+        glyph_start: Int,
+        glyph_end: Int,
+        script_tag: Int,
+        language_tag: Int,
+        mut lookup_mask: List[UInt8],
+        mut feature_offsets: List[Int],
+    ) raises -> Bool:
+        """Apply ``locl`` to one half-open script run without copying it."""
+        return self._gsub.apply_locl_range_into(
+            self._data[],
+            glyph_ids,
+            glyph_start,
+            glyph_end,
+            script_tag,
+            language_tag,
+            lookup_mask,
+            feature_offsets,
+        )
+
+    def _resolve_locl_plan_into(
+        self,
+        script_tag: Int,
+        language_tag: Int,
+        mut lookup_mask: List[UInt8],
+        mut feature_offsets: List[Int],
+        mut selected_lookups: List[UInt16],
+    ) raises -> _GsubPlan:
+        """Resolve one preflighted GSUB plan into shared caller scratch."""
+        return self._gsub.resolve_locl_plan_into(
+            self._data[],
+            script_tag,
+            language_tag,
+            lookup_mask,
+            feature_offsets,
+            selected_lookups,
+        )
+
+    def _apply_locl_plan_range_into(
+        self,
+        mut glyph_ids: List[Int],
+        glyph_start: Int,
+        glyph_end: Int,
+        plan: _GsubPlan,
+        selected_lookups: List[UInt16],
+    ) raises -> Bool:
+        """Execute one preflighted GSUB plan without resolving it again."""
+        return self._gsub.apply_locl_plan_range_into(
+            self._data[],
+            glyph_ids,
+            glyph_start,
+            glyph_end,
+            plan,
+            selected_lookups,
         )
 
     def advance_width(self, glyph_id: Int) -> Int:

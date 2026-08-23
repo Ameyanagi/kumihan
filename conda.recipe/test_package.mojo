@@ -235,6 +235,18 @@ def main() raises:
     assert_true(localized.script() == Script.HAN)
     localized.validate_against_source("A日")
 
+    var automatic_style = (
+        TextStyle()
+        .with_size(20.0)
+        .with_language(Language.JA)
+        .with_direction(Direction.LEFT_TO_RIGHT)
+    )
+    var automatic: GlyphRun = shape(face, "A日", automatic_style)
+    assert_equal(automatic.glyph_ids()[0], 2)
+    assert_equal(automatic.glyph_ids()[1], 1)
+    assert_true(automatic.script() == Script.AUTO)
+    automatic.validate_against_source("A日")
+
     var output = ShapeBuffer(capacity=2)
     shape_nominal_into(face, "日A", style, output)
     assert_equal(len(output), 2)

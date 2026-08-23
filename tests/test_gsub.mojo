@@ -44,6 +44,34 @@ def _prefix(data: List[UInt8], length: Int) -> List[UInt8]:
     return result^
 
 
+def _make_sparse_cjk_lookup_list(lookup_count: Int) -> List[UInt8]:
+    """Expand the CJK fixture with valid shared but unselected lookups."""
+    comptime original_lookup_count = 7
+    comptime lookup_list = 270
+    comptime original_lookup_children = 286
+    comptime lookup_length = 22
+    var original = make_gsub_cjk_selection()
+    var shift = 2 * (lookup_count - original_lookup_count)
+    var data = List[UInt8](length=len(original) + shift, fill=UInt8(0))
+    for index in range(original_lookup_children):
+        data[index] = original[index]
+    for index in range(original_lookup_children, len(original)):
+        data[index + shift] = original[index]
+
+    _write_u16(data, lookup_list, lookup_count)
+    var lookup_children = original_lookup_children + shift
+    for index in range(lookup_count):
+        # The first seven records retain distinct fixtures. Remaining records
+        # legally share lookup zero and are deliberately never selected.
+        var source_index = index if index < original_lookup_count else 0
+        _write_u16(
+            data,
+            lookup_list + 2 + 2 * index,
+            lookup_children + lookup_length * source_index - lookup_list,
+        )
+    return data^
+
+
 def _assert_maps(
     data: List[UInt8],
     script_tag: Int,
@@ -219,6 +247,96 @@ def test_reusable_lookup_mask_resolves_feature_edges_once() raises:
     assert_equal(len(features), 1)
     assert_true(features[0] != first_feature)
     assert_equal(features.capacity(), retained_feature_capacity)
+
+
+def test_locl_range_mutates_only_the_selected_half_open_run() raises:
+    var data = make_gsub_single_format1()
+    var gsub = _parse_gsub(data, 0, len(data), 8)
+    var glyphs: List[Int] = [1, 1, 1, 1]
+    var mask = List[UInt8]()
+    var features = List[Int]()
+
+    assert_true(
+        gsub.apply_locl_range_into(
+            data,
+            glyphs,
+            1,
+            3,
+            _DFLT,
+            0,
+            mask,
+            features,
+        )
+    )
+    assert_equal(glyphs[0], 1)
+    assert_equal(glyphs[1], 2)
+    assert_equal(glyphs[2], 2)
+    assert_equal(glyphs[3], 1)
+
+    with assert_raises(contains="glyph range is out of bounds"):
+        _ = gsub.apply_locl_range_into(
+            data,
+            glyphs,
+            -1,
+            2,
+            _DFLT,
+            0,
+            mask,
+            features,
+        )
+
+
+def test_preflighted_plan_reuses_selected_indices_for_noncontiguous_ranges() raises:
+    var data = make_gsub_cjk_selection()
+    var gsub = _parse_gsub(data, 0, len(data), 16)
+    var glyphs: List[Int] = [1, 1, 1, 1, 1]
+    var mask = List[UInt8]()
+    var features = List[Int]()
+    var selected = List[UInt16]()
+    var plan = gsub.resolve_locl_plan_into(data, _HANI, _JAN, mask, features, selected)
+
+    assert_true(plan.is_resolved())
+    assert_equal(len(mask), 7)
+    assert_equal(len(selected), 1)
+    assert_equal(selected[0], UInt16(1))
+    var retained_mask_capacity = mask.capacity()
+    var retained_selected_capacity = selected.capacity()
+    assert_true(gsub.apply_locl_plan_range_into(data, glyphs, 0, 2, plan, selected))
+    assert_true(gsub.apply_locl_plan_range_into(data, glyphs, 3, 5, plan, selected))
+    assert_equal(len(mask), 7)
+    assert_equal(mask.capacity(), retained_mask_capacity)
+    assert_equal(len(selected), 1)
+    assert_equal(selected.capacity(), retained_selected_capacity)
+    assert_equal(glyphs[0], 3)
+    assert_equal(glyphs[1], 3)
+    assert_equal(glyphs[2], 1)
+    assert_equal(glyphs[3], 3)
+    assert_equal(glyphs[4], 3)
+
+
+def test_sparse_lookup_plan_executes_only_one_retained_selected_index() raises:
+    comptime lookup_count = 4096
+    var data = _make_sparse_cjk_lookup_list(lookup_count)
+    var gsub = _parse_gsub(data, 0, len(data), 16)
+    var glyphs: List[Int] = [1, 1, 1, 1, 1]
+    var mask = List[UInt8]()
+    var features = List[Int]()
+    var selected = List[UInt16]()
+    var plan = gsub.resolve_locl_plan_into(data, _HANI, _JAN, mask, features, selected)
+
+    assert_equal(len(mask), lookup_count)
+    assert_equal(len(selected), 1)
+    assert_equal(selected[0], UInt16(1))
+    # The full mask is construction-only: discard its logical contents before
+    # executing two disjoint ranges through the one-index compact plan.
+    mask.clear()
+    assert_true(gsub.apply_locl_plan_range_into(data, glyphs, 0, 2, plan, selected))
+    assert_true(gsub.apply_locl_plan_range_into(data, glyphs, 3, 5, plan, selected))
+    assert_equal(glyphs[0], 3)
+    assert_equal(glyphs[1], 3)
+    assert_equal(glyphs[2], 1)
+    assert_equal(glyphs[3], 3)
+    assert_equal(glyphs[4], 3)
 
 
 def test_later_unsupported_lookup_preflight_is_transactional() raises:

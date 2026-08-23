@@ -34,7 +34,12 @@ measure:
 - explicit CJK IVS resolution followed by `locl`, again comparing nominal,
   allocating, and retained-buffer paths; and
 - an end-to-end selector scaling probe comparing one DFLT lookup with the
-  seven-lookup `hani`/`JAN` fixture through the public `shape_into` API.
+  seven-lookup `hani`/`JAN` fixture through the public `shape_into` API; and
+- adversarial alternating DFLT/Han/Kana/Hangul/Bopomofo itemization versus an
+  explicit whole-input DFLT control, for both allocating and retained output;
+  and
+- homogeneous AUTO Han versus explicit `Script.HAN`, isolating itemization
+  cost when selection and output are otherwise identical.
 
 The construction cases perform 4,096 single-face constructions or 4,096 TTC
 face pairs per sample. Input fixture generation and SFNT byte copying are
@@ -67,6 +72,10 @@ Kumihan does not currently expose a public shape-plan object or separate plan
 selection/execution calls. The benchmark therefore does not import private
 GSUB internals or claim to isolate planning. The one-versus-seven-lookup probe
 measures selector scaling indirectly through the supported public workflow.
+The automatic/control pair includes Unicode classification, exact
+Script_Extensions intersection, run construction, and ranged GSUB selection;
+it therefore measures the feature's complete public cost rather than an
+isolated private kernel.
 
 Results are distribution measurements, not universal performance claims. When
 publishing numbers, record the CPU, OS, machine load, `mojo --version`, commit,

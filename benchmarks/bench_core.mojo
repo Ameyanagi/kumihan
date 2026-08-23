@@ -22,6 +22,7 @@ from support.font_fixture import (
     make_gsub_single_format1,
     make_gsub_single_format2_coverage2,
     make_test_collection,
+    make_test_auto_cjk_gsub_font,
     make_test_cjk_gsub_font,
     make_test_font,
     make_test_font_with_gsub,
@@ -144,6 +145,34 @@ def _gsub_text(table_case: Int, scalar_count: Int) -> String:
                 text += "日"  # glyph 2 -> glyph 5
             else:
                 text += "本"  # glyph 3 -> glyph zero
+    return text^
+
+
+def _auto_cjk_text(scalar_count: Int) -> String:
+    """Build alternating DFLT, Han, Kana, Hangul, and Bopomofo text."""
+    var text = String()
+    for index in range(scalar_count):
+        var position = index % 6
+        if position == 0:
+            text += "A"
+        elif position == 1:
+            text += "日"
+        elif position == 2:
+            text += "あ"
+        elif position == 3:
+            text += "ア"
+        elif position == 4:
+            text += "한"
+        else:
+            text += "ㄅ"
+    return text^
+
+
+def _han_text(scalar_count: Int) -> String:
+    """Build homogeneous Han text for AUTO-versus-explicit isolation."""
+    var text = String()
+    for _ in range(scalar_count):
+        text += "日"
     return text^
 
 
@@ -962,7 +991,7 @@ def _profile_ivs_reuse(face: FontFace) raises:
 
 def _profile_gsub_format2_long(face: FontFace) raises:
     var text = _gsub_text(1, _PROFILE_SCALARS)
-    var style = TextStyle().with_size(16.0)
+    var style = TextStyle().with_size(16.0).with_script(Script.DEFAULT)
     var buffer = ShapeBuffer(capacity=_PROFILE_SCALARS)
     shape_into(face, text, style, buffer)
     var expected = _shape_buffer_checksum(buffer)
@@ -973,6 +1002,64 @@ def _profile_gsub_format2_long(face: FontFace) raises:
         raise Error("GSUB format 2 reusable profile checksum changed")
     print(
         "profile=shape_into_locl_format2_coverage2_long scalar_count=",
+        _PROFILE_SCALARS,
+        " iterations=",
+        _PROFILE_ITERATIONS,
+        " scalar_operations=",
+        _PROFILE_SCALARS * _PROFILE_ITERATIONS,
+        " retained_capacity=",
+        buffer.capacity(),
+        " checksum=",
+        expected,
+        sep="",
+    )
+
+
+def _profile_auto_scripts_long(face: FontFace) raises:
+    var text = _auto_cjk_text(_PROFILE_SCALARS)
+    var style = TextStyle().with_size(16.0).with_language(Language.JA)
+    var buffer = ShapeBuffer(capacity=_PROFILE_SCALARS)
+    shape_into(face, text, style, buffer)
+    var expected = _shape_buffer_checksum(buffer)
+    for _ in range(_PROFILE_ITERATIONS):
+        shape_into(face, text, style, buffer)
+        keep(buffer)
+    if _shape_buffer_checksum(buffer) != expected:
+        raise Error("automatic script reusable profile checksum changed")
+    print(
+        "profile=shape_into_auto_scripts_long scalar_count=",
+        _PROFILE_SCALARS,
+        " iterations=",
+        _PROFILE_ITERATIONS,
+        " scalar_operations=",
+        _PROFILE_SCALARS * _PROFILE_ITERATIONS,
+        " retained_capacity=",
+        buffer.capacity(),
+        " script_runs=",
+        buffer._script_itemizer.run_count(),
+        " distinct_script_tags=5 temporary_lookup_mask_bytes=",
+        len(buffer._gsub_lookup_mask),
+        " selected_lookup_indices=",
+        len(buffer._gsub_selected_lookups),
+        " checksum=",
+        expected,
+        sep="",
+    )
+
+
+def _profile_forced_dflt_scripts_long(face: FontFace) raises:
+    var text = _auto_cjk_text(_PROFILE_SCALARS)
+    var style = TextStyle().with_size(16.0).with_script(Script.DEFAULT)
+    var buffer = ShapeBuffer(capacity=_PROFILE_SCALARS)
+    shape_into(face, text, style, buffer)
+    var expected = _shape_buffer_checksum(buffer)
+    for _ in range(_PROFILE_ITERATIONS):
+        shape_into(face, text, style, buffer)
+        keep(buffer)
+    if _shape_buffer_checksum(buffer) != expected:
+        raise Error("forced DFLT reusable profile checksum changed")
+    print(
+        "profile=shape_into_forced_dflt_scripts_long scalar_count=",
         _PROFILE_SCALARS,
         " iterations=",
         _PROFILE_ITERATIONS,
@@ -1010,9 +1097,19 @@ def main() raises:
             var profile_face = FontFace.from_bytes(profile_bytes^)
             _profile_gsub_format2_long(profile_face)
             return
+        if mode == "--profile-auto-scripts-long":
+            var auto_profile_bytes = make_test_auto_cjk_gsub_font()
+            var auto_profile_face = FontFace.from_bytes(auto_profile_bytes^)
+            _profile_auto_scripts_long(auto_profile_face)
+            return
+        if mode == "--profile-forced-dflt-scripts-long":
+            var dflt_profile_bytes = make_test_auto_cjk_gsub_font()
+            var dflt_profile_face = FontFace.from_bytes(dflt_profile_bytes^)
+            _profile_forced_dflt_scripts_long(dflt_profile_face)
+            return
         raise Error("unknown benchmark mode: ", mode)
     print(
-        "schema=kumihan-core-benchmark-v5 mojo=1.0.0 ",
+        "schema=kumihan-core-benchmark-v7 mojo=1.0.0 ",
         "build=mojo-build-O3 measurements=31 warmup_rounds=3 ",
         "statistic=nearest-rank-p50-p95 scope=synthetic-foundation-and-gsub ",
         "fixtures=format12,format14,gsub-single1-coverage1,",
@@ -1042,7 +1139,7 @@ def main() raises:
     var gsub2 = make_gsub_single_format2_coverage2()
     var gsub2_bytes = make_test_font_with_gsub(gsub2^)
     var gsub2_face = FontFace.from_bytes(gsub2_bytes^)
-    var gsub_style = TextStyle().with_size(16.0)
+    var gsub_style = TextStyle().with_size(16.0).with_script(Script.DEFAULT)
     for scalar_count in [16, 4096]:
         var run_identity = "short" if scalar_count == 16 else "long"
         var format1_text = _gsub_text(0, scalar_count)
@@ -1079,6 +1176,49 @@ def main() raises:
             "hani_jan_seven_lookup",
             run_identity,
             scalar_count,
+        )
+
+    var auto_bytes = make_test_auto_cjk_gsub_font()
+    var auto_face = FontFace.from_bytes(auto_bytes^)
+    for scalar_count in [16, 4096]:
+        var run_identity = "short" if scalar_count == 16 else "long"
+        var auto_text = _auto_cjk_text(scalar_count)
+        _measure_gsub_paths(
+            auto_face,
+            "automatic_fragmented_mixed_cjk",
+            run_identity,
+            auto_text.copy(),
+            scalar_count,
+            TextStyle().with_size(16.0).with_language(Language.JA),
+        )
+        _measure_gsub_paths(
+            auto_face,
+            "forced_dflt_mixed_control",
+            run_identity,
+            auto_text^,
+            scalar_count,
+            TextStyle().with_size(16.0).with_script(Script.DEFAULT),
+        )
+
+        var han_text = _han_text(scalar_count)
+        _measure_gsub_paths(
+            auto_face,
+            "automatic_homogeneous_han",
+            run_identity,
+            han_text.copy(),
+            scalar_count,
+            TextStyle().with_size(16.0).with_language(Language.JA),
+        )
+        _measure_gsub_paths(
+            auto_face,
+            "explicit_homogeneous_han_control",
+            run_identity,
+            han_text^,
+            scalar_count,
+            TextStyle()
+            .with_size(16.0)
+            .with_language(Language.JA)
+            .with_script(Script.HAN),
         )
 
     var ivs_locl_gsub = make_gsub_single_format1(input_glyph=5, delta=-4)

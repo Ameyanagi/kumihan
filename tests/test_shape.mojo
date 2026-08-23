@@ -20,6 +20,8 @@ from support.font_fixture import (
     make_gsub_single_format1,
     make_gsub_single_format2_coverage2,
     make_glyph_advance_overflow_font,
+    make_test_auto_cjk_gsub_font,
+    make_test_auto_cjk_unsupported_hani_font,
     make_test_cjk_gsub_font,
     make_test_font,
     make_test_font_with_gsub,
@@ -65,12 +67,18 @@ def test_nominal_language_tags_and_directions_are_explicit() raises:
 
 
 def test_cjk_script_tags_are_compact_and_explicit() raises:
+    assert_equal(Script.AUTO.tag(), "auto")
     assert_equal(Script.DEFAULT.tag(), "DFLT")
     assert_equal(Script.HAN.open_type_tag(), "hani")
     assert_equal(Script.KANA.tag(), "kana")
     assert_equal(Script.HANGUL.tag(), "hang")
     assert_equal(Script.BOPOMOFO.tag(), "bopo")
+    assert_true(Script.AUTO != Script.DEFAULT)
+    with assert_raises(contains="automatic script itemization"):
+        _ = Script.AUTO.open_type_tag()
     assert_true(Script.DEFAULT._open_type_tag() == 0x44464C54)
+    with assert_raises(contains="automatic script itemization"):
+        _ = Script.AUTO._open_type_tag()
     assert_true(Script.HAN._open_type_tag() == 0x68616E69)
     assert_true(Language.UND._open_type_tag() == 0x64666C74)
     assert_true(Language.JA._open_type_tag() == 0x4A414E20)
@@ -91,7 +99,7 @@ def test_text_style_chain_returns_copies() raises:
 
     assert_true(original.size() == 16.0)
     assert_true(original.language() == Language.UND)
-    assert_true(original.script() == Script.DEFAULT)
+    assert_true(original.script() == Script.AUTO)
     assert_true(original.direction() == Direction.LEFT_TO_RIGHT)
     assert_true(styled.size() == 20.0)
     assert_true(styled.language() == Language.JA)
@@ -105,6 +113,8 @@ def test_text_style_chain_returns_copies() raises:
     )
     assert_true(constructed.script() == Script.HANGUL)
     assert_true(constructed != styled)
+    assert_true(styled.with_script(Script.AUTO).script() == Script.AUTO)
+    assert_true(styled.with_script(Script.DEFAULT).script() == Script.DEFAULT)
 
 
 def test_text_style_rejects_invalid_values() raises:
@@ -129,7 +139,7 @@ def test_shape_nominal_maps_cjk_once_and_preserves_utf8_clusters() raises:
     assert_true(len(run) == 5)
     assert_true(run.source_byte_length() == 14)
     assert_true(run.language() == Language.JA)
-    assert_true(run.script() == Script.DEFAULT)
+    assert_true(run.script() == Script.AUTO)
     assert_true(run.direction() == Direction.LEFT_TO_RIGHT)
     assert_true(run.font_size() == 20.0)
     assert_true(run.missing_glyph_count() == 0)
@@ -224,6 +234,107 @@ def test_shape_selects_public_cjk_script_and_language_systems() raises:
         localized.validate_against_source("A")
 
 
+def test_shape_automatically_itemizes_mixed_cjk_without_copying_runs() raises:
+    var bytes = make_test_auto_cjk_gsub_font()
+    var face = FontFace.from_bytes(bytes^)
+    var text = "A日あア한ㄅ"
+
+    var japanese = shape(face, text, TextStyle().with_language(Language.JA))
+    var expected_japanese = [2, 3, 3, 3, 2, 5]
+    assert_true(japanese.script() == Script.AUTO)
+    for index in range(len(expected_japanese)):
+        assert_equal(japanese.glyph_ids()[index], expected_japanese[index])
+    japanese.validate_against_source(text)
+
+    var korean = shape(face, text, TextStyle().with_language(Language.KO))
+    var expected_korean = [2, 2, 2, 2, 4, 5]
+    for index in range(len(expected_korean)):
+        assert_equal(korean.glyph_ids()[index], expected_korean[index])
+    korean.validate_against_source(text)
+
+
+def test_explicit_script_bypasses_automatic_mixed_itemization() raises:
+    var bytes = make_test_auto_cjk_gsub_font()
+    var face = FontFace.from_bytes(bytes^)
+    var text = "A日あア한ㄅ"
+
+    var forced_default = shape(
+        face,
+        text,
+        TextStyle().with_script(Script.DEFAULT).with_language(Language.JA),
+    )
+    var forced_han = shape(
+        face,
+        text,
+        TextStyle().with_script(Script.HAN).with_language(Language.JA),
+    )
+    for index in range(len(forced_default)):
+        assert_equal(forced_default.glyph_ids()[index], 2)
+        assert_equal(forced_han.glyph_ids()[index], 3)
+    assert_true(forced_default.script() == Script.DEFAULT)
+    assert_true(forced_han.script() == Script.HAN)
+
+
+def test_nominal_auto_metadata_does_not_materialize_itemization() raises:
+    var bytes = make_test_auto_cjk_gsub_font()
+    var face = FontFace.from_bytes(bytes^)
+    var output = ShapeBuffer(capacity=8)
+
+    shape_nominal_into(face, "A日あア한ㄅ", TextStyle(), output)
+    assert_true(output.script() == Script.AUTO)
+    assert_equal(output._script_itemizer.run_count(), 0)
+    for glyph_id in output.glyph_ids():
+        assert_equal(glyph_id, 1)
+
+    shape_into(face, "A日", TextStyle().with_language(Language.JA), output)
+    assert_true(output._script_itemizer.run_count() == 2)
+    shape_into(face, "A日", TextStyle().with_script(Script.DEFAULT), output)
+    assert_equal(output._script_itemizer.run_count(), 0)
+
+
+def test_auto_shape_reuses_compact_script_plans_and_scratch_capacity() raises:
+    var bytes = make_test_auto_cjk_gsub_font()
+    var face = FontFace.from_bytes(bytes^)
+    var output = ShapeBuffer(capacity=16)
+
+    # Every automatic tag occurs twice in non-contiguous runs. The fixture has
+    # seven GSUB lookups but selects one per tag, so cached execution retains
+    # five compact UInt16 indices and only one temporary seven-byte mask.
+    shape_into(
+        face,
+        "A日あ한ㄅA日ア한ㄅ",
+        TextStyle().with_language(Language.JA),
+        output,
+    )
+    assert_equal(output._script_itemizer.run_count(), 10)
+    assert_true(output._gsub_default_plan.is_resolved())
+    assert_true(output._gsub_bopomofo_plan.is_resolved())
+    assert_true(output._gsub_hangul_plan.is_resolved())
+    assert_true(output._gsub_han_plan.is_resolved())
+    assert_true(output._gsub_kana_plan.is_resolved())
+    assert_equal(len(output._gsub_lookup_mask), 7)
+    assert_equal(len(output._gsub_selected_lookups), 5)
+    var retained_mask_capacity = output._gsub_lookup_mask.capacity()
+    var retained_selected_capacity = output._gsub_selected_lookups.capacity()
+
+    shape_into(
+        face,
+        "日A日A",
+        TextStyle().with_language(Language.JA),
+        output,
+    )
+    assert_equal(output._script_itemizer.run_count(), 4)
+    assert_equal(len(output._gsub_lookup_mask), 7)
+    assert_equal(output._gsub_lookup_mask.capacity(), retained_mask_capacity)
+    assert_equal(len(output._gsub_selected_lookups), 2)
+    assert_equal(output._gsub_selected_lookups.capacity(), retained_selected_capacity)
+    assert_true(output._gsub_default_plan.is_resolved())
+    assert_true(output._gsub_han_plan.is_resolved())
+    assert_true(not output._gsub_bopomofo_plan.is_resolved())
+    assert_true(not output._gsub_hangul_plan.is_resolved())
+    assert_true(not output._gsub_kana_plan.is_resolved())
+
+
 def test_shape_buffer_reuses_and_clears_gsub_feature_scratch() raises:
     var bytes = make_test_cjk_gsub_font()
     var face = FontFace.from_bytes(bytes^)
@@ -298,7 +409,30 @@ def test_selected_unsupported_locl_clears_reusable_output() raises:
     assert_true(output.is_empty())
     assert_true(output.capacity() == retained_capacity)
     assert_true(output.source_byte_length() == 0)
-    assert_true(output.script() == Script.DEFAULT)
+    assert_true(output.script() == Script.AUTO)
+
+
+def test_later_auto_script_failure_clears_prior_range_mutation_and_reuses() raises:
+    var good_bytes = make_test_auto_cjk_gsub_font()
+    var good_face = FontFace.from_bytes(good_bytes^)
+    var output = ShapeBuffer(capacity=8)
+    shape_into(good_face, "A日", TextStyle().with_language(Language.JA), output)
+    var retained_capacity = output.capacity()
+
+    var bad_bytes = make_test_auto_cjk_unsupported_hani_font()
+    var bad_face = FontFace.from_bytes(bad_bytes^)
+    with assert_raises(contains="unsupported selected GSUB lookup type"):
+        shape_into(bad_face, "A日", TextStyle().with_language(Language.JA), output)
+    assert_true(output.is_empty())
+    assert_equal(output._script_itemizer.run_count(), 0)
+    assert_equal(len(output._gsub_lookup_mask), 0)
+    assert_equal(len(output._gsub_selected_lookups), 0)
+    assert_true(output.capacity() == retained_capacity)
+    assert_true(output.script() == Script.AUTO)
+
+    shape_into(good_face, "A日", TextStyle().with_language(Language.JA), output)
+    assert_equal(output.glyph_ids()[0], 2)
+    assert_equal(output.glyph_ids()[1], 3)
 
 
 def test_required_vertical_feature_is_rejected_before_horizontal_mutation() raises:
@@ -648,7 +782,7 @@ def test_glyph_run_validation_catches_parallel_array_and_cluster_corruption() ra
         bad_cluster.validate()
 
     var bad_script = shape_nominal(face, "日本", TextStyle())
-    bad_script._buffer._script = Script(_value=0)
+    bad_script._buffer._script = Script(_value=1)
     with assert_raises(contains="invalid Kumihan script tag"):
         bad_script.validate()
 

@@ -2,17 +2,26 @@
 
 ``shape_nominal`` and ``shape_nominal_into`` perform one Unicode-scalar pass,
 cmap lookup, and hmtx scaling. ``shape`` and ``shape_into`` additionally apply
-the selected OpenType required feature and ``locl`` substitutions. Script and
-language come from ``TextStyle``. None of these APIs yet apply GPOS, normalize
-text, perform bidi reordering, choose fallback fonts, or provide vertical
-substitutions.
+the selected OpenType required feature and ``locl`` substitutions. Language and
+an automatic or explicit script policy come from ``TextStyle``. None of these
+APIs yet apply GPOS, normalize text, perform bidi reordering, choose fallback
+fonts, or provide vertical substitutions.
 """
 
 from std.collections import List
 from std.math import isfinite
 
+from .gsub import _GsubPlan
+from .itemize import _ScriptItemizer
 from .sfnt import FontFace
 from .style import Direction, Language, Script, TextStyle
+
+
+comptime _TAG_DFLT = 0x44464C54
+comptime _TAG_BOPO = 0x626F706F
+comptime _TAG_HANG = 0x68616E67
+comptime _TAG_HANI = 0x68616E69
+comptime _TAG_KANA = 0x6B616E61
 
 
 struct ShapeBuffer(Movable, Sized):
@@ -34,6 +43,13 @@ struct ShapeBuffer(Movable, Sized):
     var _y_offsets: List[Float64]
     var _gsub_lookup_mask: List[UInt8]
     var _gsub_feature_offsets: List[Int]
+    var _gsub_selected_lookups: List[UInt16]
+    var _gsub_default_plan: _GsubPlan
+    var _gsub_bopomofo_plan: _GsubPlan
+    var _gsub_hangul_plan: _GsubPlan
+    var _gsub_han_plan: _GsubPlan
+    var _gsub_kana_plan: _GsubPlan
+    var _script_itemizer: _ScriptItemizer
     var _source_byte_length: Int
     var _font_size: Float64
     var _language: Language
@@ -56,10 +72,17 @@ struct ShapeBuffer(Movable, Sized):
         self._y_offsets = List[Float64]()
         self._gsub_lookup_mask = List[UInt8]()
         self._gsub_feature_offsets = List[Int]()
+        self._gsub_selected_lookups = List[UInt16]()
+        self._gsub_default_plan = _GsubPlan.unresolved()
+        self._gsub_bopomofo_plan = _GsubPlan.unresolved()
+        self._gsub_hangul_plan = _GsubPlan.unresolved()
+        self._gsub_han_plan = _GsubPlan.unresolved()
+        self._gsub_kana_plan = _GsubPlan.unresolved()
+        self._script_itemizer = _ScriptItemizer()
         self._source_byte_length = 0
         self._font_size = 16.0
         self._language = Language.UND
-        self._script = Script.DEFAULT
+        self._script = Script.AUTO
         self._direction = Direction.LEFT_TO_RIGHT
         self._ascender = 0.0
         self._descender = 0.0
@@ -80,10 +103,17 @@ struct ShapeBuffer(Movable, Sized):
         self._y_offsets = List[Float64](capacity=capacity)
         self._gsub_lookup_mask = List[UInt8]()
         self._gsub_feature_offsets = List[Int]()
+        self._gsub_selected_lookups = List[UInt16]()
+        self._gsub_default_plan = _GsubPlan.unresolved()
+        self._gsub_bopomofo_plan = _GsubPlan.unresolved()
+        self._gsub_hangul_plan = _GsubPlan.unresolved()
+        self._gsub_han_plan = _GsubPlan.unresolved()
+        self._gsub_kana_plan = _GsubPlan.unresolved()
+        self._script_itemizer = _ScriptItemizer()
         self._source_byte_length = 0
         self._font_size = 16.0
         self._language = Language.UND
-        self._script = Script.DEFAULT
+        self._script = Script.AUTO
         self._direction = Direction.LEFT_TO_RIGHT
         self._ascender = 0.0
         self._descender = 0.0
@@ -95,7 +125,7 @@ struct ShapeBuffer(Movable, Sized):
         self._source_byte_length = 0
         self._font_size = 16.0
         self._language = Language.UND
-        self._script = Script.DEFAULT
+        self._script = Script.AUTO
         self._direction = Direction.LEFT_TO_RIGHT
         self._ascender = 0.0
         self._descender = 0.0
@@ -114,6 +144,13 @@ struct ShapeBuffer(Movable, Sized):
         self._y_offsets.clear()
         self._gsub_lookup_mask.clear()
         self._gsub_feature_offsets.clear()
+        self._gsub_selected_lookups.clear()
+        self._gsub_default_plan = _GsubPlan.unresolved()
+        self._gsub_bopomofo_plan = _GsubPlan.unresolved()
+        self._gsub_hangul_plan = _GsubPlan.unresolved()
+        self._gsub_han_plan = _GsubPlan.unresolved()
+        self._gsub_kana_plan = _GsubPlan.unresolved()
+        self._script_itemizer.clear()
         self._reset_metadata()
 
     def reserve(mut self, capacity: Int) raises:
@@ -398,13 +435,14 @@ def _is_variation_selector(value: Int) -> Bool:
     )
 
 
-def shape_nominal_into(
+def _shape_nominal_into(
     face: FontFace,
     text: StringSlice,
     style: TextStyle,
     mut output: ShapeBuffer,
+    collect_scripts: Bool,
 ) raises:
-    """Map horizontal LTR text into caller-owned reusable output.
+    """Map horizontal LTR text and optionally retain automatic script runs.
 
     The source is decoded exactly once.  Ordinary scalars produce one glyph.
     A variation selector extends the immediately preceding scalar's cluster
@@ -435,7 +473,10 @@ def shape_nominal_into(
     var descender = _scaled_metric(face.descender(), scale, "descender")
     var line_gap = _scaled_metric(face.line_gap(), scale, "line gap")
 
-    output.reserve(_initial_capacity(text.byte_length()))
+    var initial_capacity = _initial_capacity(text.byte_length())
+    output.reserve(initial_capacity)
+    if collect_scripts:
+        output._script_itemizer.reserve(initial_capacity)
     var byte_offset = 0
     var total_x_advance = 0.0
     var missing_glyph_count = 0
@@ -484,6 +525,8 @@ def shape_nominal_into(
             byte_offset = cluster_end
             continue
 
+        if collect_scripts:
+            output._script_itemizer.push(scalar_value)
         var glyph_id = face.glyph_id(scalar_value)
         var x_advance = Float64(face.advance_width(glyph_id)) * scale
         if not isfinite(x_advance):
@@ -518,6 +561,24 @@ def shape_nominal_into(
     output._line_gap = line_gap
     output._total_x_advance = total_x_advance
     output._missing_glyph_count = missing_glyph_count
+    if collect_scripts:
+        output._script_itemizer.finish()
+
+
+def shape_nominal_into(
+    face: FontFace,
+    text: StringSlice,
+    style: TextStyle,
+    mut output: ShapeBuffer,
+) raises:
+    """Map horizontal LTR text into caller-owned reusable output.
+
+    The source is decoded exactly once. Ordinary scalars produce one glyph.
+    Variation selectors extend the preceding source cluster as documented by
+    ``shape_nominal``. Automatic script runs are intentionally not materialized
+    because nominal shaping does not execute OpenType Layout.
+    """
+    _shape_nominal_into(face, text, style, output, False)
 
 
 def shape_nominal(
@@ -557,6 +618,105 @@ def _recompute_horizontal_advances(
     output._missing_glyph_count = missing_glyph_count
 
 
+def _apply_cached_locl_range(
+    face: FontFace,
+    glyph_start: Int,
+    glyph_end: Int,
+    script_tag: Int,
+    language_tag: Int,
+    mut output: ShapeBuffer,
+) raises -> Bool:
+    """Resolve each script plan once and reuse it across noncontiguous runs."""
+    if glyph_start == glyph_end:
+        return False
+    if script_tag == _TAG_DFLT:
+        if not output._gsub_default_plan.is_resolved():
+            var plan = face._resolve_locl_plan_into(
+                script_tag,
+                language_tag,
+                output._gsub_lookup_mask,
+                output._gsub_feature_offsets,
+                output._gsub_selected_lookups,
+            )
+            output._gsub_default_plan = plan
+        return face._apply_locl_plan_range_into(
+            output._glyph_ids,
+            glyph_start,
+            glyph_end,
+            output._gsub_default_plan,
+            output._gsub_selected_lookups,
+        )
+    if script_tag == _TAG_BOPO:
+        if not output._gsub_bopomofo_plan.is_resolved():
+            var plan = face._resolve_locl_plan_into(
+                script_tag,
+                language_tag,
+                output._gsub_lookup_mask,
+                output._gsub_feature_offsets,
+                output._gsub_selected_lookups,
+            )
+            output._gsub_bopomofo_plan = plan
+        return face._apply_locl_plan_range_into(
+            output._glyph_ids,
+            glyph_start,
+            glyph_end,
+            output._gsub_bopomofo_plan,
+            output._gsub_selected_lookups,
+        )
+    if script_tag == _TAG_HANG:
+        if not output._gsub_hangul_plan.is_resolved():
+            var plan = face._resolve_locl_plan_into(
+                script_tag,
+                language_tag,
+                output._gsub_lookup_mask,
+                output._gsub_feature_offsets,
+                output._gsub_selected_lookups,
+            )
+            output._gsub_hangul_plan = plan
+        return face._apply_locl_plan_range_into(
+            output._glyph_ids,
+            glyph_start,
+            glyph_end,
+            output._gsub_hangul_plan,
+            output._gsub_selected_lookups,
+        )
+    if script_tag == _TAG_HANI:
+        if not output._gsub_han_plan.is_resolved():
+            var plan = face._resolve_locl_plan_into(
+                script_tag,
+                language_tag,
+                output._gsub_lookup_mask,
+                output._gsub_feature_offsets,
+                output._gsub_selected_lookups,
+            )
+            output._gsub_han_plan = plan
+        return face._apply_locl_plan_range_into(
+            output._glyph_ids,
+            glyph_start,
+            glyph_end,
+            output._gsub_han_plan,
+            output._gsub_selected_lookups,
+        )
+    if script_tag == _TAG_KANA:
+        if not output._gsub_kana_plan.is_resolved():
+            var plan = face._resolve_locl_plan_into(
+                script_tag,
+                language_tag,
+                output._gsub_lookup_mask,
+                output._gsub_feature_offsets,
+                output._gsub_selected_lookups,
+            )
+            output._gsub_kana_plan = plan
+        return face._apply_locl_plan_range_into(
+            output._glyph_ids,
+            glyph_start,
+            glyph_end,
+            output._gsub_kana_plan,
+            output._gsub_selected_lookups,
+        )
+    raise Error("script selection produced an unsupported OpenType tag")
+
+
 def shape_into(
     face: FontFace,
     text: StringSlice,
@@ -566,21 +726,39 @@ def shape_into(
     """Shape horizontal LTR text into reusable output.
 
     Nominal cmap/UVS mapping is followed by the selected OpenType required
-    feature and automatic ``locl`` substitution. Script and language come from
-    ``style``. Use ``shape_nominal_into`` when exact cmap+hmtx output is
-    required. On any failure, logical output is cleared while allocations
-    remain available for the next call.
+    feature and automatic ``locl`` substitution. ``Script.AUTO`` itemizes
+    mixed CJK text from pinned Unicode data; an explicit script applies to the
+    whole input. Language always comes from ``style``. Use
+    ``shape_nominal_into`` when exact cmap+hmtx output is required. On any
+    failure, logical output is cleared while allocations remain available for
+    the next call.
     """
     var changed: Bool
     try:
-        shape_nominal_into(face, text, style, output)
-        changed = face._apply_locl_into(
-            output._glyph_ids,
-            style.script()._open_type_tag(),
-            style.language()._open_type_tag(),
-            output._gsub_lookup_mask,
-            output._gsub_feature_offsets,
-        )
+        var automatic_scripts = style.script() == Script.AUTO
+        _shape_nominal_into(face, text, style, output, automatic_scripts)
+        changed = False
+        if automatic_scripts:
+            var language_tag = style.language()._open_type_tag()
+            for run_index in range(output._script_itemizer.run_count()):
+                if _apply_cached_locl_range(
+                    face,
+                    output._script_itemizer.run_start(run_index),
+                    output._script_itemizer.run_end(run_index),
+                    output._script_itemizer.run_tag(run_index),
+                    language_tag,
+                    output,
+                ):
+                    changed = True
+        else:
+            changed = _apply_cached_locl_range(
+                face,
+                0,
+                len(output._glyph_ids),
+                style.script()._open_type_tag(),
+                style.language()._open_type_tag(),
+                output,
+            )
         if changed:
             _recompute_horizontal_advances(face, style, output)
     except error:

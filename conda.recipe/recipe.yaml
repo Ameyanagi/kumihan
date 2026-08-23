@@ -31,10 +31,11 @@ tests:
 about:
   homepage: https://github.com/Ameyanagi/kumihan
   repository: https://github.com/Ameyanagi/kumihan
-  license: MIT OR Apache-2.0
+  license: (MIT OR Apache-2.0) AND Unicode-3.0
   license_file:
     - LICENSE-MIT
     - LICENSE-APACHE
+    - LICENSES/Unicode-3.0.txt
   summary: Validated OpenType font data and text shaping foundations for Mojo.
 
 extra:

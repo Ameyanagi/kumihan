@@ -49,6 +49,38 @@ struct _ValidationMemo(Movable):
         self.language_systems = Set[Int]()
 
 
+struct _GsubPlan(Copyable, ImplicitlyCopyable):
+    """One preflighted selection into shared ordered lookup indices."""
+
+    var _resolved: Bool
+    var _lookup_list: Int
+    var _selected_start: Int
+    var _selected_count: Int
+
+    def __init__(
+        out self,
+        resolved: Bool,
+        lookup_list: Int,
+        selected_start: Int,
+        selected_count: Int,
+    ):
+        self._resolved = resolved
+        self._lookup_list = lookup_list
+        self._selected_start = selected_start
+        self._selected_count = selected_count
+
+    @staticmethod
+    def unresolved() -> Self:
+        return Self(False, -1, 0, 0)
+
+    @staticmethod
+    def no_op() -> Self:
+        return Self(True, -1, 0, 0)
+
+    def is_resolved(self) -> Bool:
+        return self._resolved
+
+
 struct Gsub(Copyable, ImplicitlyCopyable):
     """Compact descriptor for one validated GSUB table, or an absent table."""
 
@@ -94,63 +126,205 @@ struct Gsub(Copyable, ImplicitlyCopyable):
         mut lookup_mask: List[UInt8],
         mut feature_offsets: List[Int],
     ) raises -> Bool:
+        """Apply required and ``locl`` lookups to the complete glyph list."""
+        return self.apply_locl_range_into(
+            data,
+            glyph_ids,
+            0,
+            len(glyph_ids),
+            script_tag,
+            language_tag,
+            lookup_mask,
+            feature_offsets,
+        )
+
+    def apply_locl_range_into(
+        self,
+        data: List[UInt8],
+        mut glyph_ids: List[Int],
+        glyph_start: Int,
+        glyph_end: Int,
+        script_tag: Int,
+        language_tag: Int,
+        mut lookup_mask: List[UInt8],
+        mut feature_offsets: List[Int],
+    ) raises -> Bool:
         """Apply required and ``locl`` lookups with caller-reusable selection.
 
         Physical Features are gathered and sorted in ``feature_offsets`` so
-        aliases are traversed once while resolving ``lookup_mask``. Lookup
-        preflight and execution then traverse LookupList order linearly. Both
-        scratch allocations are retained for the next call.
+        aliases are traversed once while resolving the temporary mask. The
+        selected lookup indices remain in LookupList order, so range execution
+        skips every unselected lookup. Both scratch allocations are retained
+        for the next call.
         """
         lookup_mask.clear()
         feature_offsets.clear()
+        if glyph_start < 0 or glyph_end < glyph_start or glyph_end > len(glyph_ids):
+            raise Error("input GSUB glyph range is out of bounds")
         if self._offset < 0:
             return False
+        self._validate_locl_request(data, script_tag, language_tag)
+        for glyph_index in range(glyph_start, glyph_end):
+            var glyph_id = glyph_ids[glyph_index]
+            if glyph_id < 0 or glyph_id >= self._glyph_count:
+                raise Error("input GSUB glyph ID is out of range")
+        if glyph_start == glyph_end:
+            return False
+
+        var selected_lookups = List[UInt16]()
+        var plan = self._resolve_locl_plan_from_validated_into(
+            data,
+            script_tag,
+            language_tag,
+            lookup_mask,
+            feature_offsets,
+            selected_lookups,
+        )
+        return self._apply_locl_plan_range_from_validated_into(
+            data, glyph_ids, glyph_start, glyph_end, plan, selected_lookups
+        )
+
+    def _validate_locl_request(
+        self, data: List[UInt8], script_tag: Int, language_tag: Int
+    ) raises:
         _require_range(data, self._offset, self._length, "GSUB table")
         if script_tag != 0:
             _validate_layout_tag(script_tag, "requested GSUB script")
         if language_tag != 0:
             _validate_layout_tag(language_tag, "requested GSUB language")
-        for glyph_id in glyph_ids:
-            if glyph_id < 0 or glyph_id >= self._glyph_count:
-                raise Error("input GSUB glyph ID is out of range")
-        if len(glyph_ids) == 0:
-            return False
 
+    def resolve_locl_plan_into(
+        self,
+        data: List[UInt8],
+        script_tag: Int,
+        language_tag: Int,
+        mut lookup_mask: List[UInt8],
+        mut feature_offsets: List[Int],
+        mut selected_lookups: List[UInt16],
+    ) raises -> _GsubPlan:
+        """Resolve and preflight one reusable script/language lookup plan.
+
+        The byte mask is temporary construction scratch. Ordered selected
+        indices are appended to shared caller-owned storage so several compact
+        plans can coexist for non-contiguous automatic-script runs. Both
+        allocations retain capacity across resolutions.
+        """
+        lookup_mask.clear()
+        feature_offsets.clear()
+        if self._offset < 0:
+            return _GsubPlan.no_op()
+        self._validate_locl_request(data, script_tag, language_tag)
+        return self._resolve_locl_plan_from_validated_into(
+            data,
+            script_tag,
+            language_tag,
+            lookup_mask,
+            feature_offsets,
+            selected_lookups,
+        )
+
+    def _resolve_locl_plan_from_validated_into(
+        self,
+        data: List[UInt8],
+        script_tag: Int,
+        language_tag: Int,
+        mut lookup_mask: List[UInt8],
+        mut feature_offsets: List[Int],
+        mut selected_lookups: List[UInt16],
+    ) raises -> _GsubPlan:
         var script_list = self._offset + _u16_unchecked(data, self._offset + 4)
         var feature_list = self._offset + _u16_unchecked(data, self._offset + 6)
         var lookup_list = self._offset + _u16_unchecked(data, self._offset + 8)
         var lang_sys = _select_lang_sys(data, script_list, script_tag, language_tag)
         if lang_sys < 0:
-            return False
+            return _GsubPlan.no_op()
         var lookup_count = _u16_unchecked(data, lookup_list)
+        var selected_start = len(selected_lookups)
         try:
             _preflight_required_feature(data, lang_sys, feature_list)
             _gather_feature_offsets(data, lang_sys, feature_list, feature_offsets)
             if len(feature_offsets) == 0:
-                return False
+                return _GsubPlan.no_op()
 
-            # Selection and required-feature preflight precede mask growth.
+            # The full byte mask is temporary plan-construction scratch only.
             lookup_mask.reserve(lookup_count)
             for _ in range(lookup_count):
                 lookup_mask.append(UInt8(0))
             _resolve_lookup_mask(data, feature_offsets, lookup_mask)
 
-            # Preflight is intentionally separate from glyph mutation.
+            # Preflight precedes glyph mutation. On failure the partially
+            # appended compact scratch is cleared with the temporary mask.
             for lookup_index in range(lookup_count):
                 if lookup_mask[lookup_index] != 0:
                     var lookup = _lookup_at(data, lookup_list, lookup_index)
                     _preflight_selected_lookup(data, lookup)
+                    selected_lookups.append(UInt16(lookup_index))
         except error:
             lookup_mask.clear()
             feature_offsets.clear()
+            selected_lookups.clear()
             raise error
 
+        return _GsubPlan(
+            True,
+            lookup_list,
+            selected_start,
+            len(selected_lookups) - selected_start,
+        )
+
+    def apply_locl_plan_range_into(
+        self,
+        data: List[UInt8],
+        mut glyph_ids: List[Int],
+        glyph_start: Int,
+        glyph_end: Int,
+        plan: _GsubPlan,
+        selected_lookups: List[UInt16],
+    ) raises -> Bool:
+        """Execute one preflighted plan over a half-open glyph range."""
+        if glyph_start < 0 or glyph_end < glyph_start or glyph_end > len(glyph_ids):
+            raise Error("input GSUB glyph range is out of bounds")
+        if self._offset < 0:
+            return False
+        for glyph_index in range(glyph_start, glyph_end):
+            var glyph_id = glyph_ids[glyph_index]
+            if glyph_id < 0 or glyph_id >= self._glyph_count:
+                raise Error("input GSUB glyph ID is out of range")
+        if glyph_start == glyph_end:
+            return False
+        if not plan.is_resolved():
+            raise Error("unresolved GSUB plan")
+        if plan._selected_count == 0:
+            return False
+        if (
+            plan._selected_start < 0
+            or plan._selected_start > len(selected_lookups)
+            or plan._selected_count < 0
+            or plan._selected_count > len(selected_lookups) - plan._selected_start
+        ):
+            raise Error("GSUB plan selected lookups are out of bounds")
+        return self._apply_locl_plan_range_from_validated_into(
+            data, glyph_ids, glyph_start, glyph_end, plan, selected_lookups
+        )
+
+    def _apply_locl_plan_range_from_validated_into(
+        self,
+        data: List[UInt8],
+        mut glyph_ids: List[Int],
+        glyph_start: Int,
+        glyph_end: Int,
+        plan: _GsubPlan,
+        selected_lookups: List[UInt16],
+    ) -> Bool:
         var changed = False
-        for lookup_index in range(lookup_count):
-            if lookup_mask[lookup_index] == 0:
-                continue
-            var lookup = _lookup_at(data, lookup_list, lookup_index)
-            if _apply_single_lookup(data, lookup, glyph_ids):
+        for selected_offset in range(plan._selected_count):
+            var lookup_index = Int(
+                selected_lookups[plan._selected_start + selected_offset]
+            )
+            var lookup = _lookup_at(data, plan._lookup_list, lookup_index)
+            if _apply_single_lookup_range(
+                data, lookup, glyph_ids, glyph_start, glyph_end
+            ):
                 changed = True
         return changed
 
@@ -896,7 +1070,9 @@ def _sort_feature_offsets(mut offsets: List[Int]):
 
 
 def _mark_feature_lookups(
-    data: List[UInt8], feature: Int, mut lookup_mask: List[UInt8]
+    data: List[UInt8],
+    feature: Int,
+    mut lookup_mask: List[UInt8],
 ):
     var count = _u16_unchecked(data, feature + 2)
     for index in range(count):
@@ -982,13 +1158,17 @@ def _single_substitute(data: List[UInt8], subtable: Int, glyph_id: Int) -> Int:
     return _u16_unchecked(data, subtable + 6 + 2 * coverage_index)
 
 
-def _apply_single_lookup(
-    data: List[UInt8], lookup: Int, mut glyph_ids: List[Int]
+def _apply_single_lookup_range(
+    data: List[UInt8],
+    lookup: Int,
+    mut glyph_ids: List[Int],
+    glyph_start: Int,
+    glyph_end: Int,
 ) -> Bool:
     var lookup_type = _u16_unchecked(data, lookup)
     var subtable_count = _u16_unchecked(data, lookup + 4)
     var changed = False
-    for glyph_index in range(len(glyph_ids)):
+    for glyph_index in range(glyph_start, glyph_end):
         for subtable_index in range(subtable_count):
             var subtable = lookup + _u16_unchecked(
                 data, lookup + 6 + 2 * subtable_index

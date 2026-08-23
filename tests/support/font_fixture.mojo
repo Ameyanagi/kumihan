@@ -65,6 +65,37 @@ def _make_cmap12() -> List[UInt8]:
     return data^
 
 
+def _make_cmap12_auto_cjk() -> List[UInt8]:
+    """Map one representative scalar per automatic script to glyph one."""
+    comptime group_count = 6
+    comptime subtable_length = 16 + 12 * group_count
+    var data = List[UInt8](length=12 + subtable_length, fill=UInt8(0))
+    _write_u16(data, 0, 0)
+    _write_u16(data, 2, 1)
+    _write_u16(data, 4, 3)
+    _write_u16(data, 6, 10)
+    _write_u32(data, 8, 12)
+    _write_u16(data, 12, 12)
+    _write_u16(data, 14, 0)
+    _write_u32(data, 16, subtable_length)
+    _write_u32(data, 20, 0)
+    _write_u32(data, 24, group_count)
+    var codepoints: List[Int] = [
+        0x41,  # Latin: DFLT
+        0x3042,  # Hiragana: kana
+        0x30A2,  # Katakana: kana
+        0x3105,  # Bopomofo: bopo
+        0x65E5,  # Han: hani
+        0xD55C,  # Hangul: hang
+    ]
+    for index in range(group_count):
+        var record = 28 + 12 * index
+        _write_u32(data, record, codepoints[index])
+        _write_u32(data, record + 4, codepoints[index])
+        _write_u32(data, record + 8, 1)
+    return data^
+
+
 def _make_cmap4() -> List[UInt8]:
     comptime segment_count = 5
     # One extra glyph word exercises the idRangeOffset lookup path; the other
@@ -875,6 +906,23 @@ def make_test_cjk_gsub_font() -> List[UInt8]:
     """Build a six-glyph face with distinct default/JAN/ZHS/ZHH locl forms."""
     var gsub = make_gsub_shape_cjk_selection()
     return make_test_font_with_gsub(gsub^)
+
+
+def make_test_auto_cjk_gsub_font() -> List[UInt8]:
+    """Build a face exposing distinct ``locl`` results for every auto tag."""
+    var cmap = _make_cmap12_auto_cjk()
+    var gsub = make_gsub_shape_cjk_selection()
+    return _make_test_font_from_cmap_and_gsub(cmap^, gsub^)
+
+
+def make_test_auto_cjk_unsupported_hani_font() -> List[UInt8]:
+    """Build AUTO DFLT success followed by an unsupported ``hani`` plan."""
+    var cmap = _make_cmap12_auto_cjk()
+    var gsub = make_gsub_shape_cjk_selection()
+    comptime lookup_children = 286
+    comptime lookup_length = 22
+    _write_u16(gsub, lookup_children + lookup_length, 2)
+    return _make_test_font_from_cmap_and_gsub(cmap^, gsub^)
 
 
 def make_test_font(format12: Bool = True) -> List[UInt8]:

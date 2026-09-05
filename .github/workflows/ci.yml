@@ -25,7 +25,7 @@ jobs:
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: prefix-dev/setup-pixi@f00437f565399d418b0acc85936d12c1fb668347 # v0.10.1
+      - uses: prefix-dev/setup-pixi@d3f436a425481402e6a95a1d1fc10331c708cd9e # v0.10.2
         with:
           pixi-version: v0.76.2
           cache: true
@@ -38,7 +38,7 @@ jobs:
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: prefix-dev/setup-pixi@f00437f565399d418b0acc85936d12c1fb668347 # v0.10.1
+      - uses: prefix-dev/setup-pixi@d3f436a425481402e6a95a1d1fc10331c708cd9e # v0.10.2
         with:
           pixi-version: v0.76.2
           cache: true
@@ -52,3 +52,40 @@ jobs:
         run: |
           pixi_version=$(sed -n 's/^version = "\([^"]*\)"$/\1/p' pixi.toml)
           bash scripts/check-package.sh mojo-kumihan "$pixi_version" linux-64
+
+  fuzz:
+    name: Parser fuzz smoke
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: prefix-dev/setup-pixi@d3f436a425481402e6a95a1d1fc10331c708cd9e # v0.10.2
+        with:
+          pixi-version: v0.76.2
+          cache: true
+      - run: pixi run --locked fuzz-smoke
+      - name: Retain failing input and reproduction metadata
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: parser-fuzz-failures
+          path: .pixi/fuzz-failures/
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 14
+
+  required:
+    name: Required checks
+    if: always()
+    needs: [check, package, fuzz]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require every validation job to succeed
+        env:
+          CHECK_RESULT: ${{ needs.check.result }}
+          PACKAGE_RESULT: ${{ needs.package.result }}
+          FUZZ_RESULT: ${{ needs.fuzz.result }}
+        run: |
+          test "$CHECK_RESULT" = success
+          test "$PACKAGE_RESULT" = success
+          test "$FUZZ_RESULT" = success

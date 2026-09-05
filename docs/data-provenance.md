@@ -23,20 +23,29 @@ validation locks the primary Script coverage used by those public outputs:
 - Hangul: 14 ranges and 11,739 scalars;
 - Bopomofo: 3 ranges and 77 scalars.
 
-Download and verify the sources, generate the checked-in Mojo file, and check
-it byte-for-byte with the repository's pinned Mojo 1.0 formatter:
+The five unmodified source files are vendored in
+[`tests/data/unicode/17.0.0`](../tests/data/unicode/17.0.0) under the retained
+Unicode License v3. Their digests are checked before every generation. Routine
+validation and regeneration are offline; neither operation downloads data:
 
 ```sh
-pixi run unicode-generate
 pixi run unicode-check
+pixi run unicode-generate
+pixi run unicode-test
 ```
 
-For an already downloaded source directory, add
-`--source-dir /path/to/unicode-17-files` to the generator directly through
-`pixi run python3 scripts/generate-unicode-scripts.py`. Every source is rejected
-unless its SHA-256 matches the pinned digest. Generation is an explicit
-maintainer workflow; package builds and consumers use the checked-in Mojo table
-without Python or network access.
+`pixi run check` includes both the byte-for-byte generation check and a negative
+regression that deliberately changes a generated constant, verifies rejection,
+and verifies that regeneration restores the exact original output. The test
+also rejects a tampered input and forbids generator network calls.
+
+Only the separate maintainer command `pixi run unicode-download` fetches the
+canonical sources. It verifies the complete input set before replacing files.
+A Unicode version update must change the version and hashes in the generator,
+review the licensed inputs and provenance, explicitly download them, regenerate,
+and commit that change separately from routine CI. `--source-dir /path/to/data`
+can select another already downloaded copy; checksum validation still applies.
+Package builds and consumers use the checked-in Mojo table without Python.
 
 Unicode Script properties do not prescribe one unique run-resolution
 algorithm. The behavior in `src/kumihan/itemize.mojo` is Kumihan's documented

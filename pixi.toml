@@ -7,7 +7,7 @@ version = "0.1.0"
 
 [tasks]
 bench-core = { cmd = "mojo build -O3 -I src -I tests benchmarks/bench_core.mojo -o .pixi/bench-core && .pixi/bench-core", description = "Compile and run cached cmap, nominal, and GSUB shaping benchmarks" }
-check = { depends-on = ["format-check", "readme-check", "test", "precompile"], description = "Run the complete validation suite" }
+check = { depends-on = ["format-check", "readme-check", "unicode-check", "unicode-test", "fuzz-test", "test", "precompile"], description = "Run the complete validation suite" }
 format = { cmd = "bash scripts/format.sh", description = "Format Mojo source files" }
 format-check = { cmd = "bash scripts/check-format.sh", description = "Verify Mojo formatting without modifying source" }
 package = { cmd = "rattler-build build --recipe conda.recipe/recipe.yaml -c conda-forge -c https://conda.modular.com/max -c https://repo.prefix.dev/modular-community", description = "Build the local Conda package" }
@@ -16,6 +16,14 @@ readme-check = { cmd = "bash scripts/check-readme.sh", description = "Compile th
 test = { cmd = "bash scripts/test.sh", description = "Run all Mojo TestSuite files" }
 unicode-check = { cmd = "python3 scripts/generate-unicode-scripts.py --check", description = "Verify the checked-in Unicode 17 script tables against checksum-pinned sources" }
 unicode-generate = { cmd = "python3 scripts/generate-unicode-scripts.py", description = "Regenerate Unicode 17 script tables from checksum-pinned sources" }
+
+unicode-test = { cmd = "python3 scripts/test-unicode-generation.py", description = "Prove offline regeneration detects table drift and tampered source data" }
+unicode-download = { cmd = "python3 scripts/generate-unicode-scripts.py --download", description = "Explicitly download and verify the pinned Unicode input set" }
+
+fuzz-build = { cmd = "mojo build --Werror -I src -I tests tests/fuzz/parser_worker.mojo -o .pixi/parser-fuzz-worker", description = "Compile the isolated font parser mutation target" }
+fuzz-test = { cmd = "python3 scripts/test-fuzz-runner.py", description = "Verify deterministic mutations, failure retention, and Linux resource limits" }
+fuzz-smoke = { cmd = "python3 scripts/fuzz-parser.py --cases 256", depends-on = ["fuzz-build", "fuzz-test"], description = "Run the short deterministic parser campaign (Linux)" }
+fuzz-long = { cmd = "python3 scripts/fuzz-parser.py --cases 12000 --campaign-seconds 900", depends-on = ["fuzz-build", "fuzz-test"], description = "Run the larger bounded parser campaign (Linux)" }
 
 [dependencies]
 mojo = "==1.0.0"

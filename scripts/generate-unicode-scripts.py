@@ -38,11 +38,11 @@ SOURCES = {
         "dadbaf38a0d0246e5b805bf8725cb81b7c621f93d030595635f5ba2c2f179428",
     ),
 }
-OUTPUT = Path(__file__).resolve().parent.parent / "src/kumihan/_unicode_script_data.mojo"
+ROOT = Path(__file__).resolve().parent.parent
+OUTPUT = ROOT / "src/kumihan/_unicode_script_data.mojo"
+SOURCE_DIR = ROOT / "tests/data/unicode/17.0.0"
 
-PROPERTY_RE = re.compile(
-    r"^([0-9A-F]+)(?:\.\.([0-9A-F]+))?\s*;\s*([A-Za-z_]+)"
-)
+PROPERTY_RE = re.compile(r"^([0-9A-F]+)(?:\.\.([0-9A-F]+))?\s*;\s*([A-Za-z_]+)")
 SCRIPT_EXTENSIONS_RE = re.compile(
     r"^([0-9A-F]+)(?:\.\.([0-9A-F]+))?\s*;\s*([A-Za-z0-9_ ]+)"
 )
@@ -67,17 +67,13 @@ EXPECTED_CJK_COUNTS = {
 }
 
 
-def read_source(name: str, source_dir: Path | None) -> str:
-    url, expected_digest = SOURCES[name]
-    if source_dir is None:
-        with urllib.request.urlopen(url, timeout=30) as response:
-            payload = response.read()
-    else:
-        path = source_dir / name
-        try:
-            payload = path.read_bytes()
-        except FileNotFoundError as error:
-            raise RuntimeError(f"missing pinned Unicode source: {path}") from error
+def read_source(name: str, source_dir: Path) -> str:
+    _, expected_digest = SOURCES[name]
+    path = source_dir / name
+    try:
+        payload = path.read_bytes()
+    except FileNotFoundError as error:
+        raise RuntimeError(f"missing pinned Unicode source: {path}") from error
     actual_digest = hashlib.sha256(payload).hexdigest()
     if actual_digest != expected_digest:
         raise RuntimeError(
@@ -140,7 +136,9 @@ def extension_intervals(
             try:
                 values.append(aliases[value])
             except KeyError as error:
-                raise RuntimeError(f"unknown Script_Extensions value: {value}") from error
+                raise RuntimeError(
+                    f"unknown Script_Extensions value: {value}"
+                ) from error
         result.append((start, end, tuple(sorted(set(values)))))
     return result
 
@@ -198,8 +196,7 @@ def emit_property_branch(
 ) -> list[str]:
     if not intervals:
         return [
-            indent
-            + f"return _UnicodeScriptProperty({default_candidate}, UInt8(0))"
+            indent + f"return _UnicodeScriptProperty({default_candidate}, UInt8(0))"
         ]
     middle = len(intervals) // 2
     start, end, candidate, flags = intervals[middle]
@@ -213,9 +210,7 @@ def emit_property_branch(
             intervals[middle + 1 :], indent + "    ", default_candidate
         )
     )
-    lines.append(
-        indent + f"return _UnicodeScriptProperty({candidate}, UInt8({flags}))"
-    )
+    lines.append(indent + f"return _UnicodeScriptProperty({candidate}, UInt8({flags}))")
     return lines
 
 
@@ -284,11 +279,8 @@ def emit_bracket_branch(entries: list[tuple[int, int]], indent: str) -> list[str
     return lines
 
 
-def generate(source_dir: Path | None) -> str:
-    source_text = {
-        name: read_source(name, source_dir)
-        for name in SOURCES
-    }
+def generate(source_dir: Path) -> str:
+    source_text = {name: read_source(name, source_dir) for name in SOURCES}
     short_names, aliases = script_aliases(source_text["PropertyValueAliases.txt"])
     script_ids = {name: index for index, name in enumerate(short_names)}
     scripts = value_intervals(source_text["Scripts.txt"], aliases)
@@ -490,28 +482,59 @@ def format_mojo(source: str) -> str:
             temporary_path.unlink(missing_ok=True)
 
 
+def download_sources(source_dir: Path) -> None:
+    """Explicit maintenance only: verify the entire input set before writing it."""
+    verified = {}
+    for name, (url, expected_digest) in SOURCES.items():
+        with urllib.request.urlopen(url, timeout=30) as response:
+            payload = response.read(2_000_001)
+        if len(payload) > 2_000_000:
+            raise RuntimeError(f"Unicode source exceeds 2 MB limit: {name}")
+        if hashlib.sha256(payload).hexdigest() != expected_digest:
+            raise RuntimeError(
+                f"checksum mismatch for downloaded Unicode source: {name}"
+            )
+        verified[name] = payload
+    source_dir.mkdir(parents=True, exist_ok=True)
+    for name, payload in verified.items():
+        (source_dir / name).write_bytes(payload)
+    print(f"refreshed {len(verified)} pinned Unicode sources in {source_dir}")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--source-dir",
         type=Path,
-        help="read pinned files from this directory instead of downloading them",
+        default=SOURCE_DIR,
+        help="read pinned files from this directory (default: vendored Unicode data)",
     )
     parser.add_argument(
         "--check", action="store_true", help="fail if the generated file is stale"
     )
+    parser.add_argument("--output", type=Path, default=OUTPUT)
+    parser.add_argument(
+        "--download",
+        action="store_true",
+        help="explicitly refresh checksum-pinned sources; does not generate code",
+    )
     args = parser.parse_args()
+    if args.download:
+        if args.check:
+            parser.error("--download and --check are separate maintainer operations")
+        download_sources(args.source_dir)
+        return 0
 
     generated = generate(args.source_dir)
     if args.check:
-        if not OUTPUT.exists() or OUTPUT.read_text() != generated:
-            print(f"generated Unicode data is stale: {OUTPUT}", file=sys.stderr)
+        if not args.output.exists() or args.output.read_text() != generated:
+            print(f"generated Unicode data is stale: {args.output}", file=sys.stderr)
             return 1
         return 0
 
-    OUTPUT.parent.mkdir(parents=True, exist_ok=True)
-    OUTPUT.write_text(generated)
-    print(f"generated {OUTPUT}")
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    args.output.write_text(generated)
+    print(f"generated {args.output}")
     return 0
 
 

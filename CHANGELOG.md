@@ -7,6 +7,11 @@ and uses semantic versioning for public releases.
 
 ### Added
 
+- Add an offline Unicode regeneration gate with vendored, checksum-verified
+  inputs and deliberate-drift regression tests.
+- Add bounded Linux font-parser mutation campaigns, retained reproduction
+  seeds, and required short plus weekly extended CI runs.
+- Add grouped monthly Dependabot maintenance for SHA-pinned GitHub Actions.
 - Add automatic mixed-CJK script itemization backed by checksum-pinned Unicode
   17 Script, Script_Extensions, General_Category, and paired-bracket data.
 - Preserve exact Unicode script candidates internally while mapping finalized

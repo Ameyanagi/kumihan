@@ -44,3 +44,21 @@ their source. Record the upstream project, revision, license, behavior under
 test, and independently derived fixture in the pull request. Do not import test
 data whose redistribution terms have not been verified. See
 [docs/references.md](docs/references.md).
+
+## Automated gates and dependency updates
+
+`pixi run check` also verifies the offline Unicode tables and mutation-runner
+regressions. See [Unicode provenance](docs/data-provenance.md) and
+[bounded parser fuzzing](docs/fuzzing.md) for maintenance and reproduction.
+
+GitHub Actions dependencies are checked monthly by Dependabot. Minor and patch
+updates are grouped; major updates remain individual PRs, with at most three
+open bot PRs. Keep full 40-character action commit pins. Review upstream release
+and migration notes for each major update, including runner/runtime support.
+Updating setup-pixi must preserve `pixi-version: v0.76.2` and `mojo ==1.0.0` unless
+an explicit separate toolchain change is intended.
+
+The `Required checks` CI job succeeds only after every platform check, package
+build, and parser fuzz smoke succeeds; skipped/cancelled jobs fail the gate.
+Require this named check in main's branch protection before merging dependency
+updates, and do not use administrator bypass or auto-merge without those checks.

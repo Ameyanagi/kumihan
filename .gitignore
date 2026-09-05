@@ -5,3 +5,4 @@ output/
 *.mojoc
 AGENTS.md
 
+__pycache__/

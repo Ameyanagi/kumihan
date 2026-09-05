@@ -15,27 +15,37 @@ FeatureVariations are bounded safely but use the default Feature tables.
 
 ## Install
 
-Kumihan v0.1.0 is published as a GitHub source release, but not yet to the
-hosted Mojo channel. Work from the tagged source with [Pixi](https://pixi.sh/):
+Install the pinned release into an existing [Pixi](https://pixi.sh/) project:
+
+```sh
+pixi project channel add \
+  https://ameyanagi.github.io/mojo-channel \
+  https://conda.modular.com/max \
+  conda-forge
+pixi add "mojo-kumihan==0.1.0"
+```
+
+The Mojo import is `kumihan`; the distribution name is `mojo-kumihan`.
+The package targets exactly stable Mojo 1.0.0 on macOS ARM64, Linux x86-64,
+and Linux ARM64. Run an installed-package program with
+`pixi run mojo run your_program.mojo`.
+
+The published 0.1.0 release uses `Script.DEFAULT` by default. Automatic Unicode
+script itemization described below is available in the unreleased `main`
+checkout; use an explicit script in 0.1.0 when language-specific forms matter.
+
+To develop from the tagged source instead:
 
 ```sh
 git clone --branch v0.1.0 --depth 1 https://github.com/Ameyanagi/kumihan.git
 cd kumihan
 pixi install --locked
 pixi run check
-```
-
-The Mojo import remains `kumihan`; the distribution name is `mojo-kumihan`.
-Kumihan targets exactly stable Mojo 1.0.0 on macOS ARM64, Linux x86-64, and
-Linux ARM64. Run a local program against the source package with:
-
-```sh
 pixi run mojo run -I src your_program.mojo
 ```
 
 `pixi run --locked package` builds and tests a local `mojo-kumihan` Conda
-artifact under `output/<platform>/`. A hosted install command will be added
-only after the release artifacts are mapped into the public channel.
+artifact under `output/<platform>/`.
 
 ## Chained text styles
 

@@ -56,7 +56,11 @@ def bounded_process(
             process.wait(timeout=wall_seconds)
             code = process.returncode
         except subprocess.TimeoutExpired:
-            os.killpg(process.pid, signal.SIGKILL)
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                # The child can exit between the deadline and the signal.
+                pass
             process.wait()
             code = 124
         output.seek(0)

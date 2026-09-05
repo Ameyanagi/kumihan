@@ -16,11 +16,32 @@ generator = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(generator)
 
 
+# Install the guard before loading the CLI, in the interpreter that runs it.
+# Audit hooks catch urllib and lower-level Python socket access without relying
+# on the network being unreachable or propagating an in-process mock to a child.
+OFFLINE_RUNNER = """
+import runpy
+import sys
+
+def reject_network(event, args):
+    if event in {"urllib.Request", "socket.getaddrinfo", "socket.connect", "socket.sendto"}:
+        raise AssertionError("network access is forbidden during Unicode generation: " + event)
+
+sys.addaudithook(reject_network)
+sys.argv = sys.argv[1:]
+runpy.run_path(sys.argv[0], run_name="__main__")
+"""
+
+
+def offline_command(script: Path, *arguments: str) -> list[str]:
+    return [sys.executable, "-c", OFFLINE_RUNNER, str(script), *arguments]
+
+
 class UnicodeGenerationTest(unittest.TestCase):
     def test_offline_generation_drift_and_clean_regeneration(self):
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "unicode.mojo"
-            command = [sys.executable, str(GENERATOR), "--output", str(output)]
+            command = offline_command(GENERATOR, "--output", str(output))
             # Network access during generation is a test failure, even with cache.
             with patch.object(
                 generator.urllib.request, "urlopen", side_effect=AssertionError
@@ -42,6 +63,25 @@ class UnicodeGenerationTest(unittest.TestCase):
             subprocess.run(
                 command + ["--check"], check=True, capture_output=True, timeout=60
             )
+
+    def test_cli_guard_rejects_network_before_any_connection(self):
+        probes = [
+            "import urllib.request; urllib.request.urlopen('https://www.unicode.org/')",
+            "import socket; socket.create_connection(('127.0.0.1', 9))",
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            script = Path(directory) / "network_probe.py"
+            for probe in probes:
+                with self.subTest(probe=probe):
+                    script.write_text(probe)
+                    result = subprocess.run(
+                        offline_command(script),
+                        capture_output=True,
+                        text=True,
+                        timeout=5,
+                    )
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn("network access is forbidden", result.stderr)
 
     def test_changed_upstream_input_is_rejected(self):
         with tempfile.TemporaryDirectory() as directory:

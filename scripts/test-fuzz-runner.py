@@ -6,6 +6,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest.mock import Mock, patch
 
 spec = importlib.util.spec_from_file_location(
     "fuzz_runner", Path(__file__).with_name("fuzz-parser.py")
@@ -41,6 +42,20 @@ class MutationTest(unittest.TestCase):
     def test_oversized_input_is_rejected_before_launch(self):
         with self.assertRaisesRegex(ValueError, "maximum"):
             fuzz.run_input(Path("does-not-exist"), b"x" * (fuzz.MAX_INPUT + 1))
+
+    def test_timeout_reaps_child_that_exits_before_kill(self):
+        process = Mock(pid=12345)
+        process.wait.side_effect = [fuzz.subprocess.TimeoutExpired(["worker"], 2), 0]
+        with (
+            patch.object(fuzz.sys, "platform", "linux"),
+            patch.object(fuzz.subprocess, "Popen", return_value=process),
+            patch.object(fuzz.os, "killpg", side_effect=ProcessLookupError) as kill,
+        ):
+            code, output, errors = fuzz.bounded_process(["worker"])
+        self.assertEqual((code, output, errors), (124, "", ""))
+        kill.assert_called_once_with(process.pid, fuzz.signal.SIGKILL)
+        self.assertEqual(process.wait.call_count, 2)
+        process.wait.assert_called_with()
 
     @unittest.skipUnless(
         sys.platform == "linux", "hard address-space budgets run in required Linux CI"
